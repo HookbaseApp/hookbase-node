@@ -1,0 +1,53 @@
+{
+  "name": "@hookbase/sdk",
+  "version": "2.0.0",
+  "description": "Official Node.js SDK for Hookbase webhook management",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --ext .ts",
+    "clean": "rm -rf dist",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:integration": "npx tsx scripts/integration-test.ts"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.7.2",
+    "vitest": "^2.0.0"
+  },
+  "keywords": [
+    "hookbase",
+    "webhooks",
+    "sdk",
+    "api",
+    "typescript"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hookbase/hookbase.git",
+    "directory": "sdk"
+  },
+  "homepage": "https://hookbase.app/docs/sdk",
+  "license": "MIT",
+  "author": "Hookbase <support@hookbase.app>"
+}
