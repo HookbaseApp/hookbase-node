@@ -358,7 +358,7 @@ describe('Resource Methods', () => {
       });
 
       const result = await client.portalTokens.create('app_123', {
-        expiresIn: 3600,
+        expiresInDays: 30,
       });
 
       expect(result.token).toBe('whpt_test_token');
