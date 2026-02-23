@@ -18,10 +18,7 @@ describe('Resource Methods', () => {
     it('should list applications', async () => {
       const mockData = {
         data: [{ id: 'app_1', name: 'App 1' }],
-        total: 1,
-        limit: 50,
-        offset: 0,
-        hasMore: false,
+        pagination: { hasMore: false, nextCursor: null },
       };
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -49,7 +46,7 @@ describe('Resource Methods', () => {
 
       expect(result.id).toBe('app_123');
       expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining('/applications/app_123'),
+        expect.stringContaining('/api/webhook-applications/app_123'),
         expect.any(Object)
       );
     });
@@ -67,7 +64,7 @@ describe('Resource Methods', () => {
 
       expect(result.uid).toBe('customer_123');
       expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining('/applications/uid/customer_123'),
+        expect.stringContaining('/api/webhook-applications/by-external-id/customer_123'),
         expect.any(Object)
       );
     });
@@ -112,45 +109,19 @@ describe('Resource Methods', () => {
       await client.applications.delete('app_123');
 
       expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining('/applications/app_123'),
+        expect.stringContaining('/api/webhook-applications/app_123'),
         expect.objectContaining({ method: 'DELETE' })
       );
     });
 
-    it('should getOrCreate - get existing', async () => {
-      const mockApp = { id: 'app_123', name: 'Existing', uid: 'uid_123' };
+    it('should getOrCreate via upsert endpoint', async () => {
+      const mockApp = { id: 'app_123', name: 'New App', uid: 'uid_123' };
       mockFetch.mockResolvedValueOnce({
         ok: true,
         status: 200,
         headers: new Map(),
-        json: () => Promise.resolve({ data: mockApp }),
-      });
-
-      const result = await client.applications.getOrCreate('uid_123', {
-        name: 'New App',
-      });
-
-      expect(result.name).toBe('Existing');
-      expect(mockFetch).toHaveBeenCalledTimes(1);
-    });
-
-    it('should getOrCreate - create new', async () => {
-      const mockApp = { id: 'app_123', name: 'New App', uid: 'uid_123' };
-
-      // First call returns 404
-      mockFetch.mockResolvedValueOnce({
-        ok: false,
-        status: 404,
-        headers: new Map(),
-        json: () => Promise.resolve({ error: { message: 'Not found' } }),
-      });
-
-      // Second call creates
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        status: 201,
-        headers: new Map(),
-        json: () => Promise.resolve({ data: mockApp }),
+        json: () =>
+          Promise.resolve({ data: mockApp, created: false }),
       });
 
       const result = await client.applications.getOrCreate('uid_123', {
@@ -158,7 +129,30 @@ describe('Resource Methods', () => {
       });
 
       expect(result.name).toBe('New App');
-      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('/api/webhook-applications/upsert'),
+        expect.objectContaining({ method: 'PUT' })
+      );
+    });
+
+    it('should getOrCreate - create new via upsert', async () => {
+      const mockApp = { id: 'app_123', name: 'New App', uid: 'uid_123' };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 201,
+        headers: new Map(),
+        json: () =>
+          Promise.resolve({ data: mockApp, created: true }),
+      });
+
+      const result = await client.applications.getOrCreate('uid_123', {
+        name: 'New App',
+      });
+
+      expect(result.name).toBe('New App');
+      expect(mockFetch).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -166,10 +160,7 @@ describe('Resource Methods', () => {
     it('should list endpoints', async () => {
       const mockData = {
         data: [{ id: 'ep_1', url: 'https://example.com/webhooks' }],
-        total: 1,
-        limit: 50,
-        offset: 0,
-        hasMore: false,
+        pagination: { hasMore: false, nextCursor: null },
       };
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -204,11 +195,12 @@ describe('Resource Methods', () => {
     });
 
     it('should rotate secret', async () => {
+      // rotateSecret returns the raw response (no .data unwrap)
       mockFetch.mockResolvedValueOnce({
         ok: true,
         status: 200,
         headers: new Map(),
-        json: () => Promise.resolve({ data: { secret: 'whsec_new_secret' } }),
+        json: () => Promise.resolve({ secret: 'whsec_new_secret' }),
       });
 
       const result = await client.endpoints.rotateSecret('app_123', 'ep_123');
@@ -248,8 +240,9 @@ describe('Resource Methods', () => {
   describe('MessagesResource', () => {
     it('should send message', async () => {
       const mockResult = {
-        messageId: 'msg_123',
-        outboundMessages: [{ id: 'out_1', endpointId: 'ep_1', status: 'pending' }],
+        eventId: 'msg_123',
+        messagesQueued: 1,
+        endpoints: [{ id: 'ep_1', url: 'https://example.com/webhooks' }],
       };
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -268,41 +261,44 @@ describe('Resource Methods', () => {
     });
 
     it('should retry failed message', async () => {
-      const mockOutbound = { id: 'out_123', status: 'pending', attempts: 2 };
+      const mockReplay = {
+        originalMessageId: 'out_original',
+        newMessageId: 'out_new',
+        status: 'pending',
+      };
       mockFetch.mockResolvedValueOnce({
         ok: true,
         status: 200,
         headers: new Map(),
-        json: () => Promise.resolve({ data: mockOutbound }),
+        json: () => Promise.resolve({ data: mockReplay }),
       });
 
       const result = await client.messages.retry('app_123', 'out_123');
 
       expect(result.status).toBe('pending');
       expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining('/outbound-messages/out_123/retry'),
+        expect.stringContaining('/api/outbound-messages/out_123/replay'),
         expect.objectContaining({ method: 'POST' })
       );
     });
   });
 
   describe('SubscriptionsResource', () => {
-    it('should subscribe to multiple event types', async () => {
-      mockFetch
-        .mockResolvedValueOnce({
-          ok: true,
-          status: 201,
-          headers: new Map(),
-          json: () =>
-            Promise.resolve({ data: { id: 'sub_1', eventTypeId: 'evt_1' } }),
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          status: 201,
-          headers: new Map(),
-          json: () =>
-            Promise.resolve({ data: { id: 'sub_2', eventTypeId: 'evt_2' } }),
-        });
+    it('should subscribe to multiple event types via bulk endpoint', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 201,
+        headers: new Map(),
+        json: () =>
+          Promise.resolve({
+            created: 2,
+            skipped: 0,
+            subscriptions: [
+              { id: 'sub_1', eventTypeId: 'evt_1' },
+              { id: 'sub_2', eventTypeId: 'evt_2' },
+            ],
+          }),
+      });
 
       const result = await client.subscriptions.subscribeToMany(
         'app_123',
@@ -311,11 +307,15 @@ describe('Resource Methods', () => {
       );
 
       expect(result).toHaveLength(2);
-      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('/api/webhook-subscriptions/bulk'),
+        expect.objectContaining({ method: 'POST' })
+      );
     });
 
     it('should unsubscribe from all', async () => {
-      // First call: list subscriptions
+      // First call: list subscriptions (API returns { data, pagination } format)
       mockFetch.mockResolvedValueOnce({
         ok: true,
         status: 200,
@@ -326,10 +326,7 @@ describe('Resource Methods', () => {
               { id: 'sub_1', endpointId: 'ep_123' },
               { id: 'sub_2', endpointId: 'ep_123' },
             ],
-            total: 2,
-            limit: 50,
-            offset: 0,
-            hasMore: false,
+            pagination: { hasMore: false, nextCursor: null },
           }),
       });
 
@@ -362,6 +359,10 @@ describe('Resource Methods', () => {
       });
 
       expect(result.token).toBe('whpt_test_token');
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('/api/portal/webhook-applications/app_123/tokens'),
+        expect.objectContaining({ method: 'POST' })
+      );
     });
 
     it('should revoke portal token', async () => {
@@ -370,7 +371,7 @@ describe('Resource Methods', () => {
       await client.portalTokens.revoke('app_123', 'ptk_123');
 
       expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining('/portal-tokens/ptk_123'),
+        expect.stringContaining('/api/portal/tokens/ptk_123'),
         expect.objectContaining({ method: 'DELETE' })
       );
     });
@@ -386,10 +387,7 @@ describe('Resource Methods', () => {
         json: () =>
           Promise.resolve({
             data: [{ id: 'app_1' }, { id: 'app_2' }],
-            total: 4,
-            limit: 2,
-            offset: 0,
-            hasMore: true,
+            pagination: { hasMore: true, nextCursor: 'cursor_1' },
           }),
       });
 
@@ -401,10 +399,7 @@ describe('Resource Methods', () => {
         json: () =>
           Promise.resolve({
             data: [{ id: 'app_3' }, { id: 'app_4' }],
-            total: 4,
-            limit: 2,
-            offset: 2,
-            hasMore: false,
+            pagination: { hasMore: false, nextCursor: null },
           }),
       });
 

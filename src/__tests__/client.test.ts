@@ -167,7 +167,7 @@ describe('Hookbase Client', () => {
       await client.applications.delete('app_123');
 
       expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining('/applications/app_123'),
+        expect.stringContaining('/api/webhook-applications/app_123'),
         expect.objectContaining({ method: 'DELETE' })
       );
     });
@@ -177,7 +177,7 @@ describe('Hookbase Client', () => {
         ok: true,
         status: 200,
         headers: new Map(),
-        json: () => Promise.resolve({ data: [], total: 0, limit: 10, offset: 0, hasMore: false }),
+        json: () => Promise.resolve({ data: [], pagination: { hasMore: false, nextCursor: null } }),
       });
 
       await client.applications.list({ limit: 10, offset: 20 });
@@ -334,7 +334,7 @@ describe('Hookbase Client', () => {
         ok: true,
         status: 200,
         headers: new Map(),
-        json: () => Promise.resolve({ data: { messageId: 'msg_123' } }),
+        json: () => Promise.resolve({ data: { eventId: 'msg_123', messagesQueued: 0, endpoints: [] } }),
       });
 
       await client.messages.send(
