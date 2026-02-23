@@ -35,6 +35,10 @@ export {
   FiltersResource,
   SchemasResource,
   DlqResource,
+  AnalyticsResource,
+  ApiKeysResource,
+  TunnelsResource,
+  CronJobsResource,
 } from './resources';
 
 // Type exports

@@ -28,7 +28,7 @@ export class DlqResource extends BaseResource {
     const response = await this.client.request<{
       data: DlqMessage[];
       pagination: { hasMore: boolean; nextCursor: string | null };
-    }>('GET', '/api/outbound-messages/dlq', {
+    }>('GET', '/api/outbound-messages/dlq/messages', {
       query: this.buildQuery(params),
       requestOptions: options,
     });
@@ -55,7 +55,7 @@ export class DlqResource extends BaseResource {
       const response = await this.client.request<{
         data: DlqMessage[];
         pagination: { hasMore: boolean; nextCursor: string | null };
-      }>('GET', '/api/outbound-messages/dlq', {
+      }>('GET', '/api/outbound-messages/dlq/messages', {
         query: { ...this.buildQuery(params), cursor },
         requestOptions: options,
       });

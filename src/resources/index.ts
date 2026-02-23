@@ -14,3 +14,7 @@ export { TransformsResource } from './transforms';
 export { FiltersResource } from './filters';
 export { SchemasResource } from './schemas';
 export { DlqResource } from './dlq';
+export { AnalyticsResource } from './analytics';
+export { ApiKeysResource } from './apiKeys';
+export { TunnelsResource } from './tunnels';
+export { CronJobsResource } from './cronJobs';

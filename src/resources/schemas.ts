@@ -75,7 +75,7 @@ export class SchemasResource extends BaseResource {
     data: UpdateSchemaInput,
     options?: RequestOptions
   ): Promise<void> {
-    await this.client.request('PATCH', `/api/schemas/${encodeURIComponent(id)}`, {
+    await this.client.request('PUT', `/api/schemas/${encodeURIComponent(id)}`, {
       body: data,
       requestOptions: options,
     });
