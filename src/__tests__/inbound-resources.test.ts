@@ -180,6 +180,108 @@ describe('Inbound Resources', () => {
       expect(result.name).toBe('New Dest');
     });
 
+    it('should create warehouse destination (S3)', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({
+        destination: {
+          id: 'dst_s3', name: 'S3 Warehouse', type: 's3',
+          config: { bucket: 'my-bucket', region: 'us-east-1', accessKeyId: 'AKIA...', secretAccessKey: '***' },
+          fieldMapping: [{ source: '$.id', target: 'event_id', type: 'string' }],
+        },
+      }));
+
+      const result = await client.destinations.create({
+        name: 'S3 Warehouse',
+        type: 's3',
+        config: {
+          bucket: 'my-bucket',
+          region: 'us-east-1',
+          accessKeyId: 'AKIA...',
+          secretAccessKey: 'secret',
+        },
+        fieldMapping: [{ source: '$.id', target: 'event_id', type: 'string' }],
+      });
+
+      expect(result.name).toBe('S3 Warehouse');
+      expect(result.type).toBe('s3');
+      expect(result.config).toBeDefined();
+      expect(result.fieldMapping).toHaveLength(1);
+
+      // Verify body sent to API
+      const callBody = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(callBody.type).toBe('s3');
+      expect(callBody.config.bucket).toBe('my-bucket');
+      expect(callBody.fieldMapping[0].source).toBe('$.id');
+    });
+
+    it('should create warehouse destination (R2)', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({
+        destination: {
+          id: 'dst_r2', name: 'R2 Archive', type: 'r2',
+          config: { bucket: 'archive', prefix: 'webhooks/', fileFormat: 'jsonl', partitionBy: 'date' },
+          fieldMapping: null,
+        },
+      }));
+
+      const result = await client.destinations.create({
+        name: 'R2 Archive',
+        type: 'r2',
+        config: { bucket: 'archive', prefix: 'webhooks/', fileFormat: 'jsonl', partitionBy: 'date' },
+      });
+
+      expect(result.type).toBe('r2');
+      expect(result.config).toEqual({ bucket: 'archive', prefix: 'webhooks/', fileFormat: 'jsonl', partitionBy: 'date' });
+      expect(result.fieldMapping).toBeNull();
+    });
+
+    it('should return type and config on get for warehouse destination', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({
+        destination: {
+          id: 'dst_gcs', name: 'GCS Dest', type: 'gcs', url: '',
+          config: { bucket: 'events', projectId: 'proj-1', serviceAccountKey: '{}' },
+          fieldMapping: [
+            { source: '$.payload', target: 'data', type: 'json' },
+            { source: '$.timestamp', target: 'received_at', type: 'timestamp', default: 'now()' },
+          ],
+        },
+      }));
+
+      const result = await client.destinations.get('dst_gcs');
+
+      expect(result.type).toBe('gcs');
+      expect(result.config).toBeDefined();
+      expect(result.fieldMapping).toHaveLength(2);
+      expect(result.fieldMapping![1].default).toBe('now()');
+    });
+
+    it('should update warehouse destination config', async () => {
+      mockFetch.mockResolvedValueOnce({ ok: true, status: 200, headers: new Map(), json: () => Promise.resolve({ success: true }) });
+
+      await client.destinations.update('dst_s3', {
+        config: { bucket: 'new-bucket', region: 'eu-west-1', accessKeyId: 'AKIA2', secretAccessKey: 'new-secret' },
+        fieldMapping: [{ source: '$.body', target: 'payload', type: 'json' }],
+      });
+
+      const callBody = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(callBody.config.bucket).toBe('new-bucket');
+      expect(callBody.fieldMapping).toHaveLength(1);
+    });
+
+    it('should default to http type for standard destination', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({
+        destination: {
+          id: 'dst_http', name: 'HTTP Dest', type: 'http',
+          url: 'https://example.com/hook',
+          config: null, fieldMapping: null,
+        },
+      }));
+
+      const result = await client.destinations.get('dst_http');
+
+      expect(result.type).toBe('http');
+      expect(result.config).toBeNull();
+      expect(result.fieldMapping).toBeNull();
+    });
+
     it('should delete destination', async () => {
       mockFetch.mockResolvedValueOnce({ ok: true, status: 204, headers: new Map() });
 

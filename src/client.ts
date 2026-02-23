@@ -16,6 +16,10 @@ import {
   FiltersResource,
   SchemasResource,
   DlqResource,
+  AnalyticsResource,
+  ApiKeysResource,
+  TunnelsResource,
+  CronJobsResource,
 } from './resources';
 import {
   HookbaseApiError,
@@ -31,7 +35,7 @@ import {
 const DEFAULT_BASE_URL = 'https://api.hookbase.app';
 const DEFAULT_TIMEOUT = 30000;
 const DEFAULT_RETRIES = 3;
-const SDK_VERSION = '1.0.0';
+const SDK_VERSION = '2.1.0';
 
 /**
  * Hookbase API client
@@ -91,6 +95,14 @@ export class Hookbase implements ApiClient {
   public readonly schemas: SchemasResource;
   /** Dead letter queue resource (outbound) */
   public readonly dlq: DlqResource;
+  /** Analytics resource */
+  public readonly analytics: AnalyticsResource;
+  /** API keys resource */
+  public readonly apiKeys: ApiKeysResource;
+  /** Tunnels resource */
+  public readonly tunnels: TunnelsResource;
+  /** Cron jobs resource */
+  public readonly cronJobs: CronJobsResource;
 
   constructor(options: HookbaseClientOptions) {
     if (!options.apiKey) {
@@ -122,6 +134,12 @@ export class Hookbase implements ApiClient {
     this.transforms = new TransformsResource(this);
     this.filters = new FiltersResource(this);
     this.schemas = new SchemasResource(this);
+
+    // Initialize admin resources
+    this.analytics = new AnalyticsResource(this);
+    this.apiKeys = new ApiKeysResource(this);
+    this.tunnels = new TunnelsResource(this);
+    this.cronJobs = new CronJobsResource(this);
   }
 
   /**

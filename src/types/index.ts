@@ -410,6 +410,51 @@ export interface ListSourcesParams {
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 export type AuthType = 'none' | 'basic' | 'bearer' | 'api_key' | 'custom_header';
+export type DestinationType = 'http' | 's3' | 'r2' | 'gcs' | 'azure_blob';
+
+export interface S3Config {
+  bucket: string;
+  region: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  prefix?: string;
+  fileFormat?: 'json' | 'jsonl';
+  partitionBy?: 'date' | 'hour' | 'source';
+}
+
+export interface R2Config {
+  bucket: string;
+  prefix?: string;
+  fileFormat?: 'json' | 'jsonl';
+  partitionBy?: 'date' | 'hour' | 'source';
+}
+
+export interface GCSConfig {
+  bucket: string;
+  projectId: string;
+  serviceAccountKey: string;
+  prefix?: string;
+  fileFormat?: 'json' | 'jsonl';
+  partitionBy?: 'date' | 'hour' | 'source';
+}
+
+export interface AzureBlobConfig {
+  accountName: string;
+  accountKey: string;
+  containerName: string;
+  prefix?: string;
+  fileFormat?: 'json' | 'jsonl';
+  partitionBy?: 'date' | 'hour' | 'source';
+}
+
+export type WarehouseConfig = S3Config | R2Config | GCSConfig | AzureBlobConfig;
+
+export interface FieldMapping {
+  source: string;
+  target: string;
+  type: 'string' | 'number' | 'boolean' | 'timestamp' | 'json';
+  default?: string;
+}
 
 export interface Destination {
   id: string;
@@ -417,6 +462,7 @@ export interface Destination {
   name: string;
   slug: string;
   description: string | null;
+  type: DestinationType;
   url: string;
   method: HttpMethod;
   headers: Record<string, string> | null;
@@ -428,6 +474,8 @@ export interface Destination {
   rateLimit: number | null;
   rateLimitWindow: number | null;
   isActive: boolean;
+  config: WarehouseConfig | null;
+  fieldMapping: FieldMapping[] | null;
   deliveryCount: number;
   lastDeliveryAt: string | null;
   createdAt: string;
@@ -438,7 +486,8 @@ export interface CreateDestinationInput {
   name: string;
   slug?: string;
   description?: string;
-  url: string;
+  type?: DestinationType;
+  url?: string;
   method?: HttpMethod;
   headers?: Record<string, string>;
   authType?: AuthType;
@@ -448,6 +497,8 @@ export interface CreateDestinationInput {
   retryInterval?: number;
   rateLimit?: number;
   rateLimitWindow?: number;
+  config?: WarehouseConfig;
+  fieldMapping?: FieldMapping[];
 }
 
 export interface UpdateDestinationInput {
@@ -464,6 +515,8 @@ export interface UpdateDestinationInput {
   rateLimit?: number;
   rateLimitWindow?: number;
   isActive?: boolean;
+  config?: WarehouseConfig;
+  fieldMapping?: FieldMapping[];
 }
 
 export interface ListDestinationsParams {
