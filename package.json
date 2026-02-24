@@ -44,8 +44,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/hookbase/hookbase.git",
-    "directory": "sdk"
+    "url": "https://github.com/HookbaseApp/hookbase-node.git"
   },
   "homepage": "https://hookbase.app/docs/sdk",
   "license": "MIT",
