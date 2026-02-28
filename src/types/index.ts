@@ -70,6 +70,7 @@ export interface Endpoint {
   rateLimitPeriod: number | null;
   headers: Record<string, string> | null;
   metadata: Record<string, unknown> | null;
+  useStaticIp: boolean;
   totalMessages: number;
   totalSuccesses: number;
   totalFailures: number;
@@ -89,6 +90,7 @@ export interface CreateEndpointInput {
   rateLimitPeriod?: number;
   headers?: Record<string, string>;
   metadata?: Record<string, unknown>;
+  useStaticIp?: boolean;
 }
 
 export interface UpdateEndpointInput {
@@ -100,6 +102,7 @@ export interface UpdateEndpointInput {
   rateLimitPeriod?: number;
   headers?: Record<string, string>;
   metadata?: Record<string, unknown>;
+  useStaticIp?: boolean;
 }
 
 export interface ListEndpointsParams extends PaginationParams {
@@ -474,6 +477,7 @@ export interface Destination {
   rateLimit: number | null;
   rateLimitWindow: number | null;
   isActive: boolean;
+  useStaticIp: boolean;
   config: WarehouseConfig | null;
   fieldMapping: FieldMapping[] | null;
   deliveryCount: number;
@@ -499,6 +503,7 @@ export interface CreateDestinationInput {
   rateLimitWindow?: number;
   config?: WarehouseConfig;
   fieldMapping?: FieldMapping[];
+  useStaticIp?: boolean;
 }
 
 export interface UpdateDestinationInput {
@@ -517,6 +522,7 @@ export interface UpdateDestinationInput {
   isActive?: boolean;
   config?: WarehouseConfig;
   fieldMapping?: FieldMapping[];
+  useStaticIp?: boolean;
 }
 
 export interface ListDestinationsParams {
