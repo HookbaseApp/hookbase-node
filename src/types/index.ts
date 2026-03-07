@@ -480,6 +480,8 @@ export interface Destination {
   useStaticIp: boolean;
   config: WarehouseConfig | null;
   fieldMapping: FieldMapping[] | null;
+  batchSize?: number;
+  batchWindowSeconds?: number;
   deliveryCount: number;
   lastDeliveryAt: string | null;
   createdAt: string;
@@ -504,6 +506,8 @@ export interface CreateDestinationInput {
   config?: WarehouseConfig;
   fieldMapping?: FieldMapping[];
   useStaticIp?: boolean;
+  batchSize?: number;
+  batchWindowSeconds?: number;
 }
 
 export interface UpdateDestinationInput {
@@ -523,6 +527,8 @@ export interface UpdateDestinationInput {
   config?: WarehouseConfig;
   fieldMapping?: FieldMapping[];
   useStaticIp?: boolean;
+  batchSize?: number;
+  batchWindowSeconds?: number;
 }
 
 export interface ListDestinationsParams {
