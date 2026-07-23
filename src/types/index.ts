@@ -354,11 +354,19 @@ export interface Source {
   rateLimitWindow: number | null;
   /** Transient mode - payloads never stored at rest (HIPAA/GDPR compliance) */
   transientMode: boolean;
+  /** HTTP verbs the ingest endpoint accepts. Empty array means any method. */
+  allowedMethods: IngestMethod[];
   eventCount: number;
   lastEventAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
+
+/**
+ * HTTP verbs an ingest endpoint can be restricted to.
+ * OPTIONS is excluded: CORS preflight is answered before ingest runs, so it is never gateable.
+ */
+export type IngestMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD';
 
 export interface SourceWithSecret extends Source {
   signingSecret: string;
@@ -380,6 +388,8 @@ export interface CreateSourceInput {
   rateLimitWindow?: number;
   /** Enable transient mode - payloads never stored at rest (HIPAA/GDPR compliance) */
   transientMode?: boolean;
+  /** Restrict the ingest endpoint to these HTTP verbs. Omit or [] to accept any method. */
+  allowedMethods?: IngestMethod[];
 }
 
 export interface UpdateSourceInput {
@@ -397,6 +407,8 @@ export interface UpdateSourceInput {
   rateLimitWindow?: number;
   /** Enable transient mode - payloads never stored at rest (HIPAA/GDPR compliance) */
   transientMode?: boolean;
+  /** Restrict the ingest endpoint to these HTTP verbs. Pass [] to accept any method again. */
+  allowedMethods?: IngestMethod[];
 }
 
 export interface ListSourcesParams {
