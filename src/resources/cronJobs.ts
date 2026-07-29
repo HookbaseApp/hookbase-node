@@ -10,6 +10,7 @@ export interface CronJob {
   isActive: boolean;
   description?: string;
   groupId?: string;
+  useStaticIp: boolean;
   createdAt: string;
   [key: string]: unknown;
 }
@@ -33,6 +34,7 @@ export interface CreateCronJobInput {
   description?: string;
   groupId?: string;
   timezone?: string;
+  useStaticIp?: boolean;
 }
 
 export interface UpdateCronJobInput {
@@ -46,6 +48,7 @@ export interface UpdateCronJobInput {
   description?: string;
   groupId?: string;
   timezone?: string;
+  useStaticIp?: boolean;
 }
 
 export interface CreateCronGroupInput {
