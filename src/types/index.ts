@@ -486,8 +486,13 @@ export interface Destination {
   timeout: number;
   retryCount: number;
   retryInterval: number;
-  rateLimit: number | null;
-  rateLimitWindow: number | null;
+  throttle: {
+    mode: 'off' | 'rate' | 'concurrency';
+    rateLimit: number | null;
+    rateUnit: 'second' | 'minute' | 'hour' | null;
+    maxConcurrency: number | null;
+    queueLimit: number | null;
+  } | null;
   isActive: boolean;
   useStaticIp: boolean;
   config: WarehouseConfig | null;
@@ -513,8 +518,13 @@ export interface CreateDestinationInput {
   timeout?: number;
   retryCount?: number;
   retryInterval?: number;
-  rateLimit?: number;
-  rateLimitWindow?: number;
+  throttle?: {
+    mode: 'off' | 'rate' | 'concurrency';
+    rateLimit?: number;
+    rateUnit?: 'second' | 'minute' | 'hour';
+    maxConcurrency?: number;
+    queueLimit?: number;
+  };
   config?: WarehouseConfig;
   fieldMapping?: FieldMapping[];
   useStaticIp?: boolean;
@@ -533,8 +543,13 @@ export interface UpdateDestinationInput {
   timeout?: number;
   retryCount?: number;
   retryInterval?: number;
-  rateLimit?: number;
-  rateLimitWindow?: number;
+  throttle?: {
+    mode: 'off' | 'rate' | 'concurrency';
+    rateLimit?: number;
+    rateUnit?: 'second' | 'minute' | 'hour';
+    maxConcurrency?: number;
+    queueLimit?: number;
+  };
   isActive?: boolean;
   config?: WarehouseConfig;
   fieldMapping?: FieldMapping[];
