@@ -6,7 +6,7 @@ import type {
   DlqBulkRetryResult,
   DlqBulkDeleteResult,
   ListDlqParams,
-  PaginatedResponse,
+  CursorPaginatedResponse,
   RequestOptions,
 } from '../types';
 
@@ -19,12 +19,14 @@ export class DlqResource extends BaseResource {
   }
 
   /**
-   * List DLQ messages with cursor-based pagination
+   * List DLQ messages with cursor-based pagination. Pass the returned `cursor` back in as
+   * `{ cursor }` to fetch the next page — it was previously read off the response and then
+   * dropped, so there was no way for a caller to ask for page two without using `listAll()`.
    */
   async list(
     params: ListDlqParams = {},
     options?: RequestOptions
-  ): Promise<PaginatedResponse<DlqMessage>> {
+  ): Promise<CursorPaginatedResponse<DlqMessage>> {
     const response = await this.client.request<{
       data: DlqMessage[];
       pagination: { hasMore: boolean; nextCursor: string | null };
@@ -38,6 +40,7 @@ export class DlqResource extends BaseResource {
       limit: params.limit ?? 50,
       offset: 0,
       hasMore: response.pagination?.hasMore ?? false,
+      cursor: response.pagination?.nextCursor ?? null,
     };
   }
 

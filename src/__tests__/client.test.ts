@@ -277,6 +277,94 @@ describe('Hookbase Client', () => {
     });
   });
 
+  // Hookbase actually sends `error` as a plain string (`{ error: "...", code: "...",
+  // details?: {...} }`), not the `{ error: { message, code } }` shape every test above mocks.
+  // That mismatch is exactly how the original bug shipped unnoticed: the tests never exercised
+  // the real response shape, so a parser that only worked against a shape the API never sends
+  // still passed every one of them.
+  describe('error handling against the real (string error) response shape', () => {
+    let client: Hookbase;
+
+    beforeEach(() => {
+      client = new Hookbase({
+        apiKey: 'test_api_key',
+        fetch: mockFetch,
+        retries: 0,
+      });
+    });
+
+    it('surfaces the API\'s own message on 401, not the generic default', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        headers: new Map(),
+        json: () => Promise.resolve({ error: 'API key has been revoked', code: 'key_revoked' }),
+      });
+
+      const error = await client.applications.get('app_123').catch((e) => e);
+
+      // HookbaseAuthenticationError fixes its own `code` to 'authentication_error' regardless
+      // of what the API sent — only the message extraction is under test here.
+      expect(error).toBeInstanceOf(HookbaseAuthenticationError);
+      expect(error.message).toBe('API key has been revoked');
+    });
+
+    it('surfaces the API\'s own message on 429, not the generic default', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 429,
+        headers: new Map([['retry-after', '120']]),
+        json: () =>
+          Promise.resolve({
+            error: "You've used today's RCA budget (100/day on pro). Resets at UTC midnight.",
+            code: 'rca_budget_exceeded',
+          }),
+      });
+
+      const error = await client.applications.get('app_123').catch((e) => e);
+
+      expect(error).toBeInstanceOf(HookbaseRateLimitError);
+      expect(error.message).toBe(
+        "You've used today's RCA budget (100/day on pro). Resets at UTC midnight."
+      );
+      expect(error.retryAfter).toBe(120);
+    });
+
+    it('reads field errors from details.fieldErrors (zod .flatten() shape) on 400', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 400,
+        headers: new Map(),
+        json: () =>
+          Promise.resolve({
+            error: 'Invalid input',
+            details: { formErrors: [], fieldErrors: { name: ['Required'] } },
+          }),
+      });
+
+      const error = await client.applications.create({ name: '' }).catch((e) => e);
+
+      expect(error).toBeInstanceOf(HookbaseValidationError);
+      expect(error.message).toBe('Invalid input');
+      expect(error.validationErrors).toEqual({ name: ['Required'] });
+    });
+
+    it('surfaces the API\'s own message on an unmapped status code', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+        headers: new Map(),
+        json: () => Promise.resolve({ error: 'Delivery worker unavailable', code: 'worker_down' }),
+      });
+
+      const error = await client.applications.get('app_123').catch((e) => e);
+
+      expect(error).toBeInstanceOf(HookbaseApiError);
+      expect(error.message).toBe('Delivery worker unavailable');
+      expect(error.code).toBe('worker_down');
+    });
+  });
+
   describe('retries', () => {
     it('should retry on network errors', async () => {
       const client = new Hookbase({

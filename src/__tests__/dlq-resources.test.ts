@@ -37,10 +37,25 @@ describe('DLQ Resources', () => {
 
       expect(result.data).toHaveLength(2);
       expect(result.hasMore).toBe(true);
+      // Previously read off the response and then dropped, leaving no way to ask for page two
+      // without switching to listAll().
+      expect(result.cursor).toBe('2024-01-01T00:00:00Z');
       expect(mockFetch).toHaveBeenCalledWith(
         expect.stringContaining('/api/outbound-messages/dlq'),
         expect.objectContaining({ method: 'GET' })
       );
+    });
+
+    it('returns a null cursor on the last page', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({
+        data: [{ id: 'msg_1', status: 'dlq', dlqReason: 'exhausted' }],
+        pagination: { hasMore: false, nextCursor: null },
+      }));
+
+      const result = await client.dlq.list();
+
+      expect(result.hasMore).toBe(false);
+      expect(result.cursor).toBeNull();
     });
 
     it('should get DLQ stats', async () => {

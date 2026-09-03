@@ -1,4 +1,54 @@
 /**
+ * The shape an error response body can take. Hookbase almost always sends `error` as a plain
+ * string (`{ error: "You've used today's RCA budget...", code: "...", details: {...} }`), not
+ * `{ error: { message, code } }` — but reading `body.error?.message` unconditionally treats the
+ * string as an object, which silently returns `undefined` (a string has no `.message`) rather
+ * than throwing. Every caller of these got the class's generic default instead of Hookbase's own,
+ * often actionable, text — e.g. "Rate limit exceeded" instead of "You've used today's RCA budget
+ * (100/day on pro). Resets at UTC midnight." The object shape is still accepted here in case an
+ * endpoint ever nests it.
+ */
+export interface ApiErrorBody {
+  error?: string | { message?: string; code?: string; details?: Record<string, unknown> };
+  message?: string;
+  code?: string;
+  details?: Record<string, unknown>;
+}
+
+export function extractErrorMessage(body: ApiErrorBody, fallback: string): string {
+  if (typeof body.error === 'string' && body.error) return body.error;
+  if (body.error && typeof body.error === 'object' && body.error.message) return body.error.message;
+  if (body.message) return body.message;
+  return fallback;
+}
+
+export function extractErrorCode(body: ApiErrorBody, fallback: string): string {
+  if (body.error && typeof body.error === 'object' && body.error.code) return body.error.code;
+  if (body.code) return body.code;
+  return fallback;
+}
+
+export function extractErrorDetails(body: ApiErrorBody): Record<string, unknown> | undefined {
+  if (body.error && typeof body.error === 'object' && body.error.details) return body.error.details;
+  return body.details;
+}
+
+/**
+ * Field-level validation messages, if the API sent any. Zod's `.flatten()` — what every route
+ * actually sends under `details` — shapes them as `{ fieldErrors: Record<string, string[]> }`,
+ * not the `{ validationErrors }` this SDK used to look for under `error` (which was doubly wrong:
+ * `error` is a string, and the field never lived there even when it was an object).
+ */
+export function extractValidationErrors(body: ApiErrorBody): Record<string, string[]> | undefined {
+  const details = extractErrorDetails(body);
+  const fieldErrors = details?.fieldErrors;
+  if (fieldErrors && typeof fieldErrors === 'object') {
+    return fieldErrors as Record<string, string[]>;
+  }
+  return undefined;
+}
+
+/**
  * Base error class for all Hookbase SDK errors
  */
 export class HookbaseError extends Error {
@@ -36,24 +86,15 @@ export class HookbaseApiError extends HookbaseError {
 
   static fromResponse(
     status: number,
-    body: {
-      error?: {
-        message?: string;
-        code?: string;
-        details?: Record<string, unknown>;
-      };
-      message?: string;
-      code?: string;
-    },
+    body: ApiErrorBody,
     requestId?: string
   ): HookbaseApiError {
-    const error = body.error ?? body;
     return new HookbaseApiError(
-      error.message ?? `API error: ${status}`,
+      extractErrorMessage(body, `API error: ${status}`),
       status,
-      error.code ?? 'unknown_error',
+      extractErrorCode(body, 'unknown_error'),
       requestId,
-      body.error?.details
+      extractErrorDetails(body)
     );
   }
 }

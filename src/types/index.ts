@@ -15,6 +15,15 @@ export interface PaginatedResponse<T> {
   hasMore: boolean;
 }
 
+/**
+ * A `PaginatedResponse` for an endpoint that pages by opaque cursor rather than offset (DLQ is
+ * the one resource on this signature). `cursor` is the value to pass back in as the next
+ * request's `cursor` param; `null` once `hasMore` is `false`.
+ */
+export interface CursorPaginatedResponse<T> extends PaginatedResponse<T> {
+  cursor: string | null;
+}
+
 export interface ApiResponse<T> {
   data: T;
 }

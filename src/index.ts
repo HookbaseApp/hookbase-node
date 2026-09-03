@@ -46,6 +46,7 @@ export type {
   // Pagination
   PaginationParams,
   PaginatedResponse,
+  CursorPaginatedResponse,
   ApiResponse,
   SortOrder,
 
@@ -185,3 +186,15 @@ export type {
   HookbaseClientOptions,
   RequestOptions,
 } from './types';
+
+// Cron Jobs — declared alongside CronJobsResource in resources/cronJobs.ts rather than
+// types/index.ts like every other resource's types, which is how they ended up missing from
+// this file: nothing importing by name could ever have worked.
+export type {
+  CronJob,
+  CronJobExecution,
+  CronGroup,
+  CreateCronJobInput,
+  UpdateCronJobInput,
+  CreateCronGroupInput,
+} from './resources/cronJobs';

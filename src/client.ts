@@ -30,6 +30,8 @@ import {
   HookbaseRateLimitError,
   HookbaseTimeoutError,
   HookbaseNetworkError,
+  extractErrorMessage,
+  extractValidationErrors,
 } from './errors';
 
 const DEFAULT_BASE_URL = 'https://api.hookbase.app';
@@ -308,36 +310,38 @@ export class Hookbase implements ApiClient {
         // Ignore JSON parse errors
       }
 
+      // Hookbase sends `{ error: "<string>", code, details }` — `error` is a plain string on
+      // almost every route, not `{ message, code }`. Casting it to that shape doesn't make it
+      // one: `"<string>".message` is `undefined`, so every branch below used to fall straight
+      // through to its class's generic default (e.g. "Rate limit exceeded" instead of the API's
+      // own "You've used today's RCA budget (100/day on pro). Resets at UTC midnight.").
+      // extractErrorMessage/extractValidationErrors read the real shape and still accept the
+      // nested-object one, in case an endpoint ever sends that instead.
       switch (response.status) {
         case 401:
           throw new HookbaseAuthenticationError(
-            (errorBody.error as { message?: string })?.message ??
-              (errorBody.message as string),
+            extractErrorMessage(errorBody, 'Authentication failed'),
             requestId
           );
 
         case 403:
           throw new HookbaseForbiddenError(
-            (errorBody.error as { message?: string })?.message ??
-              (errorBody.message as string),
+            extractErrorMessage(errorBody, 'Access forbidden'),
             requestId
           );
 
         case 404:
           throw new HookbaseNotFoundError(
-            (errorBody.error as { message?: string })?.message ??
-              (errorBody.message as string),
+            extractErrorMessage(errorBody, 'Resource not found'),
             requestId
           );
 
         case 400:
         case 422:
           throw new HookbaseValidationError(
-            (errorBody.error as { message?: string })?.message ??
-              (errorBody.message as string),
+            extractErrorMessage(errorBody, 'Validation failed'),
             requestId,
-            (errorBody.error as { validationErrors?: Record<string, string[]> })
-              ?.validationErrors
+            extractValidationErrors(errorBody)
           );
 
         case 429:
@@ -346,18 +350,13 @@ export class Hookbase implements ApiClient {
             10
           );
           throw new HookbaseRateLimitError(
-            (errorBody.error as { message?: string })?.message ??
-              (errorBody.message as string),
+            extractErrorMessage(errorBody, 'Rate limit exceeded'),
             retryAfter,
             requestId
           );
 
         default:
-          throw HookbaseApiError.fromResponse(
-            response.status,
-            errorBody as { error?: { message?: string; code?: string }; message?: string; code?: string },
-            requestId
-          );
+          throw HookbaseApiError.fromResponse(response.status, errorBody, requestId);
       }
     } catch (error) {
       clearTimeout(timeoutId);

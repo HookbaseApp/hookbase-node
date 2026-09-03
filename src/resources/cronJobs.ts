@@ -3,16 +3,34 @@ import type { RequestOptions } from '../types';
 
 export interface CronJob {
   id: string;
+  organizationId: string;
+  groupId: string | null;
   name: string;
-  schedule: string;
+  description: string | null;
+  cronExpression: string;
+  timezone: string;
   url: string;
   method: string;
-  isActive: boolean;
-  description?: string;
-  groupId?: string;
+  headers: string | null;
+  payload: string | null;
+  timeoutMs: number;
   useStaticIp: boolean;
+  isActive: boolean;
+  notifyOnFailure: boolean;
+  notifyOnSuccess: boolean;
+  notifyEmails: string | null;
+  consecutiveFailures: number;
+  lastRunAt: string | null;
+  nextRunAt: string | null;
   createdAt: string;
-  [key: string]: unknown;
+  updatedAt: string;
+}
+
+export interface CronJobExecution {
+  id: string;
+  status: 'success' | 'failed';
+  responseStatus: number | null;
+  latencyMs: number;
 }
 
 export interface CronGroup {
@@ -131,6 +149,19 @@ export class CronJobsResource extends BaseResource {
     await this.client.request('DELETE', `/api/cron/${encodeURIComponent(id)}`, {
       requestOptions: options,
     });
+  }
+
+  /**
+   * Run a cron job on demand, outside its schedule. Counts as a monthly event on free plans
+   * the same as a scheduled run, and honours the job's `useStaticIp` setting.
+   */
+  async trigger(id: string, options?: RequestOptions): Promise<CronJobExecution> {
+    const response = await this.client.request<{ execution: CronJobExecution }>(
+      'POST',
+      `/api/cron/${encodeURIComponent(id)}/trigger`,
+      { requestOptions: options }
+    );
+    return response.execution;
   }
 
   /**
