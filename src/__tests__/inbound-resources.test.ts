@@ -294,10 +294,12 @@ describe('Inbound Resources', () => {
     });
 
     it('should test destination', async () => {
+      // The API answers with `status`/`latencyMs`, not `statusCode`/`duration` —
+      // see api/src/routes/destinations.ts. The SDK maps onto the latter names.
       mockFetch.mockResolvedValueOnce(mockResponse({
         success: true,
-        statusCode: 200,
-        duration: 150,
+        status: 200,
+        latencyMs: 150,
         responseBody: 'OK',
       }));
 
@@ -305,6 +307,21 @@ describe('Inbound Resources', () => {
 
       expect(result.success).toBe(true);
       expect(result.statusCode).toBe(200);
+      expect(result.duration).toBe(150);
+      expect(result.responseBody).toBe('OK');
+    });
+
+    it('should surface the error message on a failed test', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({
+        success: false,
+        error: 'Network error',
+      }));
+
+      const result = await client.destinations.test('dst_1');
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Network error');
+      expect(result.statusCode).toBeUndefined();
     });
   });
 

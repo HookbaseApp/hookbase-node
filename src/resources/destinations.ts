@@ -157,9 +157,32 @@ export class DestinationsResource extends BaseResource {
   async test(
     id: string,
     options?: RequestOptions
-  ): Promise<{ success: boolean; statusCode: number; duration: number; responseBody: string }> {
-    return this.client.request('POST', `/api/destinations/${encodeURIComponent(id)}/test`, {
+  ): Promise<{
+    success: boolean;
+    statusCode?: number;
+    duration?: number;
+    responseBody?: string;
+    error?: string;
+  }> {
+    // The API answers with `status`/`latencyMs` (api/src/routes/destinations.ts), not
+    // `statusCode`/`duration` — this used to forward the raw response under the wrong
+    // field names, so every caller read `undefined` for both. `error` is present on
+    // a failed test (network error, missing warehouse config) and was dropped entirely.
+    const response = await this.client.request<{
+      success: boolean;
+      status?: number;
+      latencyMs?: number;
+      responseBody?: string;
+      error?: string;
+    }>('POST', `/api/destinations/${encodeURIComponent(id)}/test`, {
       requestOptions: options,
     });
+    return {
+      success: response.success,
+      statusCode: response.status,
+      duration: response.latencyMs,
+      responseBody: response.responseBody,
+      error: response.error,
+    };
   }
 }
