@@ -62,7 +62,7 @@ describe('Inbound Resources', () => {
         source: { id: 'src_new', name: 'New Source', signingSecret: 'whsec_abc123' },
       }));
 
-      const result = await client.sources.create({ name: 'New Source' });
+      const result = await client.sources.create({ name: 'New Source', slug: 'new-source' });
 
       expect(result.signingSecret).toBe('whsec_abc123');
       expect(mockFetch).toHaveBeenCalledWith(

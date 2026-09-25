@@ -372,82 +372,114 @@ export type SourceProvider =
 export type DedupStrategy = 'auto' | 'provider_id' | 'payload_hash' | 'idempotency_key' | 'none';
 export type IpFilterMode = 'none' | 'allowlist' | 'denylist' | 'both';
 
+/**
+ * A source as the API returns it.
+ *
+ * The signing secret is never included: GET and PATCH responses carry `hasSigningSecret` and the
+ * last four characters instead. The full value is returned exactly twice — by `create()`, which
+ * resolves to a {@link SourceWithSecret}, and by `revealSecret()`.
+ */
 export interface Source {
   id: string;
   organizationId: string;
   name: string;
   slug: string;
+  provider: SourceProvider | null;
   description: string | null;
-  provider: SourceProvider;
+  /** Whether a signing secret is set. The secret itself is not returned here. */
+  hasSigningSecret: boolean;
+  /** Last four characters of the signing secret, prefixed with `...`, or null if none is set. */
+  signingSecretLast4: string | null;
+  /** Reject events whose signature fails verification. Defaults to false: a failing event is
+   *  flagged with `signatureValid: false` and delivered anyway. */
+  rejectInvalidSignatures: boolean;
+  rateLimitPerMinute: number | null;
   isActive: boolean;
-  signingSecret: string | null;
-  ingestUrl: string | null;
-  verifySignature: boolean;
-  dedupStrategy: DedupStrategy;
-  dedupWindow: number | null;
-  dedupHeaderName: string | null;
+  customDomainId: string | null;
   ipFilterMode: IpFilterMode;
-  ipAllowlist: string[] | null;
-  ipDenylist: string[] | null;
-  rateLimit: number | null;
-  rateLimitWindow: number | null;
+  ipAllowlist: string[];
+  ipDenylist: string[];
+  encryptFields: string[];
+  maskFields: string[];
+  dedupEnabled: boolean;
+  dedupStrategy: DedupStrategy;
+  dedupWindowHours: number;
+  dedupCustomHeader: string | null;
   /** Transient mode - payloads never stored at rest (HIPAA/GDPR compliance) */
   transientMode: boolean;
   /** HTTP verbs the ingest endpoint accepts. Empty array means any method. */
   allowedMethods: IngestMethod[];
   eventCount: number;
-  lastEventAt: string | null;
+  routeCount: number;
+  /** Returned by `get()` and `create()`. Not included in `list()` responses. */
+  ingestUrl?: string;
   createdAt: string;
   updatedAt: string;
 }
 
 /**
  * HTTP verbs an ingest endpoint can be restricted to.
- * OPTIONS is excluded: CORS preflight is answered before ingest runs, so it is never gateable.
  */
 export type IngestMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD';
 
+/** What `create()` returns: a source plus the one look at its signing secret you get. */
 export interface SourceWithSecret extends Source {
   signingSecret: string;
+  ingestUrl: string;
 }
 
 export interface CreateSourceInput {
   name: string;
-  slug?: string;
-  description?: string;
+  /** Required: it forms the ingest URL, `/ingest/<org>/<slug>`, and cannot be changed later. */
+  slug: string;
   provider?: SourceProvider;
-  verifySignature?: boolean;
-  dedupStrategy?: DedupStrategy;
-  dedupWindow?: number;
-  dedupHeaderName?: string;
+  description?: string;
+  /** Supply your own secret to match what the provider is already configured with. Omit it and
+   *  the API generates one, returned once on the created source. */
+  signingSecret?: string;
+  /** Reject events whose signature fails verification. Defaults to false. */
+  rejectInvalidSignatures?: boolean;
+  rateLimitPerMinute?: number | null;
   ipFilterMode?: IpFilterMode;
   ipAllowlist?: string[];
   ipDenylist?: string[];
-  rateLimit?: number;
-  rateLimitWindow?: number;
+  /** JSONPath expressions whose values are encrypted at rest. */
+  encryptFields?: string[];
+  /** JSONPath expressions whose values are masked in stored payloads. */
+  maskFields?: string[];
+  dedupEnabled?: boolean;
+  dedupStrategy?: DedupStrategy;
+  /** Deduplication window in hours, 1 to 168. */
+  dedupWindowHours?: number;
+  /** Header to deduplicate on when dedupStrategy is 'idempotency_key'. */
+  dedupCustomHeader?: string;
   /** Enable transient mode - payloads never stored at rest (HIPAA/GDPR compliance) */
   transientMode?: boolean;
   /** Restrict the ingest endpoint to these HTTP verbs. Omit or [] to accept any method. */
-  allowedMethods?: IngestMethod[];
+  allowedMethods?: IngestMethod[] | null;
 }
 
 export interface UpdateSourceInput {
   name?: string;
-  description?: string;
+  description?: string | null;
+  provider?: SourceProvider | null;
   isActive?: boolean;
-  verifySignature?: boolean;
-  dedupStrategy?: DedupStrategy;
-  dedupWindow?: number;
-  dedupHeaderName?: string;
+  signingSecret?: string | null;
+  rejectInvalidSignatures?: boolean;
+  rateLimitPerMinute?: number | null;
   ipFilterMode?: IpFilterMode;
-  ipAllowlist?: string[];
-  ipDenylist?: string[];
-  rateLimit?: number;
-  rateLimitWindow?: number;
+  ipAllowlist?: string[] | null;
+  ipDenylist?: string[] | null;
+  encryptFields?: string[] | null;
+  maskFields?: string[] | null;
+  dedupEnabled?: boolean;
+  dedupStrategy?: DedupStrategy | null;
+  dedupWindowHours?: number | null;
+  dedupCustomHeader?: string | null;
   /** Enable transient mode - payloads never stored at rest (HIPAA/GDPR compliance) */
   transientMode?: boolean;
   /** Restrict the ingest endpoint to these HTTP verbs. Pass [] to accept any method again. */
-  allowedMethods?: IngestMethod[];
+  allowedMethods?: IngestMethod[] | null;
 }
 
 export interface ListSourcesParams {
