@@ -325,22 +325,45 @@ export interface VerifyOptions {
 // Source Types (Inbound)
 // ============================================
 
+/**
+ * Providers the API will accept for a source.
+ *
+ * Mirrors `SUPPORTED_SIGNATURE_PROVIDERS` in the API (`api/src/utils/signature-schemes.ts`),
+ * which is derived from the signature scheme table rather than restated. Regenerate with
+ * `npx tsx scripts/print-source-enums.ts` in the api package; do not hand-extend this union,
+ * because a value the API does not accept is a 400 the type system promised would not happen.
+ *
+ * Removed in the 2026-09 correction: `sendgrid`, `mailgun` and `linear`. All three were
+ * advertised here from the beginning and none was ever accepted by the API. SendGrid signs
+ * with ECDSA and Mailgun puts the signature in the POST body, so neither fits this scheme
+ * model at all; Linear's scheme is real but unverified against its docs, so wiring it would
+ * mean guessing. Use `custom` for all three.
+ */
 export type SourceProvider =
+  | 'bitbucket'
+  | 'custom'
   | 'generic'
   | 'github'
-  | 'stripe'
+  | 'gitlab'
+  | 'heroku'
+  | 'lemonsqueezy'
+  | 'paddle'
+  | 'sentry'
   | 'shopify'
   | 'slack'
-  | 'twilio'
-  | 'sendgrid'
-  | 'mailgun'
-  | 'paddle'
-  | 'linear'
+  | 'standard-webhooks'
+  | 'stripe'
   | 'svix'
-  | 'custom';
+  | 'twilio'
+  | 'typeform'
+  | 'zoom';
 
-export type DedupStrategy = 'none' | 'header' | 'payload_hash' | 'event_id';
-export type IpFilterMode = 'none' | 'allowlist' | 'denylist';
+/**
+ * Corrected alongside `SourceProvider`: `header` and `event_id` were never accepted, and the
+ * three values the API actually defaults to and documents were missing. `auto` is the default.
+ */
+export type DedupStrategy = 'auto' | 'provider_id' | 'payload_hash' | 'idempotency_key' | 'none';
+export type IpFilterMode = 'none' | 'allowlist' | 'denylist' | 'both';
 
 export interface Source {
   id: string;
