@@ -340,14 +340,20 @@ export interface VerifyOptions {
  * mean guessing. Use `custom` for all three.
  */
 export type SourceProvider =
+  | 'airtable'
+  | 'asana'
   | 'bitbucket'
+  | 'calendly'
   | 'custom'
   | 'generic'
   | 'github'
   | 'gitlab'
   | 'heroku'
+  | 'intercom'
   | 'lemonsqueezy'
+  | 'notion'
   | 'paddle'
+  | 'razorpay'
   | 'sentry'
   | 'shopify'
   | 'slack'
@@ -356,6 +362,7 @@ export type SourceProvider =
   | 'svix'
   | 'twilio'
   | 'typeform'
+  | 'workos'
   | 'zoom';
 
 /**
