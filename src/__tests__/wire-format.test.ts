@@ -473,6 +473,10 @@ describe('wire format', () => {
       ['Mixed 123 ABC xyz', 'mixed-123-abc-xyz'],
       ["don't stop", 'don-t-stop'],
       ['a', 'a'],
+      // A combining mark outside the U+0300-U+036F block. This row is why the strip is the whole
+      // Mn category: with only the block, Node produced 'a-b' here while Python and .NET gave 'ab'.
+      ['a\u064db', 'ab'],
+      ['\u0939\u093f\u0928\u094d\u0926\u0940 name', 'name'],
     ])('cross-SDK contract: %j derives %j', (name, expected) => {
       expect(deriveDestinationSlug(name)).toBe(expected);
     });

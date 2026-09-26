@@ -131,7 +131,11 @@ export function deriveDestinationSlug(name: string): string {
   const slug = name
     .normalize('NFKD')
     // Combining marks left behind by the decomposition above, so é becomes e, not e + mark.
-    .replace(/[̀-ͯ]/g, '')
+    // The whole Mn category, not just the U+0300-U+036F block: a mark outside that block (Arabic,
+    // Hebrew, Devanagari) would otherwise survive to become a hyphen here while the Python and
+    // .NET SDKs, which drop the category, removed it -- the same name would slug differently
+    // depending on which SDK created the destination.
+    .replace(/\p{Mn}/gu, '')
     .toLowerCase()
     // Any run of non-alphanumerics becomes a single hyphen, which is the collapse step as well.
     .replace(/[^a-z0-9]+/g, '-')
