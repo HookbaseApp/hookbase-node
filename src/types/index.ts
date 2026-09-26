@@ -624,6 +624,11 @@ export interface Destination {
   organizationId: string;
   name: string;
   slug: string;
+  /**
+   * @deprecated Always null. `destinations` has no description column, so the API never returns
+   * one -- see the same field on CreateDestinationInput. Reading it renders an empty value, not
+   * the destination's description.
+   */
   description: string | null;
   type: DestinationType;
   url: string;
@@ -631,8 +636,16 @@ export interface Destination {
   headers: Record<string, string> | null;
   authType: AuthType;
   authConfig: Record<string, unknown> | null;
+  /** Request timeout in milliseconds. This is the field the API returns. */
+  timeoutMs: number;
+  /**
+   * @deprecated Always undefined at runtime despite this type. The API returns `timeoutMs`; this
+   * name was never in a response. Use {@link Destination.timeoutMs}.
+   */
   timeout: number;
+  /** @deprecated Always undefined at runtime. There is no retry-count column; the API never sends it. */
   retryCount: number;
+  /** @deprecated Always undefined at runtime. There is no retry-interval column; the API never sends it. */
   retryInterval: number;
   throttle: {
     mode: 'off' | 'rate' | 'concurrency';
@@ -648,6 +661,14 @@ export interface Destination {
   batchSize?: number;
   batchWindowSeconds?: number;
   deliveryCount: number;
+  /** Routes pointing at this destination. */
+  routeCount?: number;
+  successCount?: number;
+  failureCount?: number;
+  /**
+   * @deprecated Always undefined at runtime. There is no last_delivery_at column anywhere in the
+   * schema and no response includes this key, so anything rendering it shows a permanent blank.
+   */
   lastDeliveryAt: string | null;
   createdAt: string;
   updatedAt: string;
