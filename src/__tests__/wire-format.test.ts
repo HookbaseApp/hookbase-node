@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hookbase } from '../client';
 import { HookbaseError } from '../errors';
-import { deriveDestinationSlug } from '../resources/wire';
+import { deriveDestinationSlug, SLUG_MARK_ADDITIONS } from '../resources/wire';
 import type {
   CreateDestinationInput,
   CreateEndpointInput,
@@ -449,9 +449,10 @@ describe('wire format', () => {
     // The cross-SDK slug contract. All four SDKs carry this exact table, so a change to any one
     // implementation shows up as a failure rather than as two SDKs quietly deriving different
     // slugs from the same destination name. Keep it identical to:
-    //   python-sdk/tests/resources/test_destinations.py  (CROSS_SDK_SLUG_CASES)
-    //   go-sdk/destinations_test.go                      (crossSDKSlugCases)
-    //   dotnet-sdk/tests/.../DestinationSlugTests.cs     (CrossSdkSlugCases)
+    //   python-sdk/tests/test_slug_contract.py            (CROSS_SDK_SLUG_CASES)
+    //   go-sdk/destinations_fields_test.go                (crossSDKSlugCases)
+    //   dotnet-sdk/tests/Hookbase.Tests/
+    //     DestinationRequestSerializationTests.cs         (CrossSdkSlugCases)
     // Note Æ/Ø/Đ/Ł do not decompose under NFKD and so are dropped rather than folded
     // ('Ærø Ømega' -> 'r-mega'); that is agreed-upon behaviour, not an accident to fix in
     // one SDK alone.
@@ -477,12 +478,92 @@ describe('wire format', () => {
       // Mn category: with only the block, Node produced 'a-b' here while Python and .NET gave 'ab'.
       ['a\u064db', 'ab'],
       ['\u0939\u093f\u0928\u094d\u0926\u0940 name', 'name'],
+      ['\u05d0\u05b8 hebrew', 'hebrew'],
+      // The rows below are the cases where the four implementations can disagree for reasons that
+      // have nothing to do with the algorithm, so they are the ones worth pinning. Each was run
+      // against all four before being written down.
+      //
+      // Not marks themselves (both are Lm) but their NFKD is one, so decomposing before stripping
+      // makes them vanish rather than separate. Go folds per rune and needed an explicit empty fold
+      // to match.
+      ['a\uff9eb', 'ab'],
+      ['a\uff9fb', 'ab'],
+      // Mn only from Unicode 16, so a runtime on 15.0 does not strip it without SLUG_MARKS' help.
+      ['a\u1acfb', 'ab'],
+      // The same, outside the BMP: .NET read this as two surrogate halves, neither of them a mark.
+      ['a\u{1e5ee}b', 'ab'],
+      // The other direction: Mn in Unicode 15.0 and Mc from 15.1. A spacing mark separates.
+      ['a\u{1171e}b', 'a-b'],
+      // Unassigned before Unicode 16, where it decomposes to 'A'. Without SLUG_FOLD_ADDITIONS an
+      // older runtime leaves it alone and it separates instead.
+      ['a\u{1ccd6}b', 'aab'],
+      // A noncharacter: separates, and must not throw. .NET's Normalize rejects these outright.
+      ['a\ufffeb', 'a-b'],
     ])('cross-SDK contract: %j derives %j', (name, expected) => {
       expect(deriveDestinationSlug(name)).toBe(expected);
     });
 
     it('cross-SDK contract: a name with no alphanumerics throws', () => {
       expect(() => deriveDestinationSlug('\u2603\u2603\u2603')).toThrow(HookbaseError);
+    });
+
+    // `engines` allows Node 18, whose V8 is two Unicode releases behind the current one, so
+    // `\p{Mn}` and NFKD both answer differently there. SLUG_MARKS and SLUG_FOLD_ADDITIONS pin the
+    // fold to one version; these two tests are what says the tables are complete and correctly
+    // spelled. The ranges are written out here rather than imported so an off-by-one in wire.ts
+    // fails rather than being copied into the expectation.
+    const NEWER_UNICODE_MARKS =
+      '0897 1ACF-1ADD 1AE0-1AEB 10D69-10D6D 10EFA-10EFC 113BB-113C0 113CE 113D0 113D2 ' +
+      '113E1-113E2 11B60 11B62-11B64 11B66 11F5A 1611E-16129 1612D-1612F 1E5EE-1E5EF 1E6E3 ' +
+      '1E6E6 1E6EE-1E6EF 1E6F5';
+
+    const newerUnicodeMarks = (): number[] =>
+      NEWER_UNICODE_MARKS.split(' ').flatMap((span) => {
+        const [low, high = low] = span.split('-');
+        const from = parseInt(low, 16);
+        const to = parseInt(high, 16);
+        return Array.from({ length: to - from + 1 }, (_, i) => from + i);
+      });
+
+    it('strips marks a newer Unicode added, whatever this runtime knows about them', () => {
+      const marks = newerUnicodeMarks();
+      expect(marks).toHaveLength(75);
+
+      for (const codePoint of marks) {
+        const name = `a${String.fromCodePoint(codePoint)}b`;
+        expect(deriveDestinationSlug(name), `U+${codePoint.toString(16).toUpperCase()}`).toBe('ab');
+      }
+    });
+
+    // The test above passes on a current Node whether or not SLUG_MARK_ADDITIONS is right, because
+    // `\p{Mn}` already covers all 75 there. This one is what actually holds the table to its
+    // contents, and it is the reason the ranges are exported at all.
+    it('covers every newer-Unicode mark in the additions table itself', () => {
+      for (const codePoint of newerUnicodeMarks()) {
+        expect(
+          SLUG_MARK_ADDITIONS.test(String.fromCodePoint(codePoint)),
+          `U+${codePoint.toString(16).toUpperCase()} missing from SLUG_MARK_ADDITIONS`
+        ).toBe(true);
+      }
+
+      // And nothing beyond them: a range widened by accident would strip a character the other
+      // SDKs keep. U+1171E is the neighbour that must stay out, being Mc since Unicode 15.1.
+      expect(SLUG_MARK_ADDITIONS.test('\u{1171E}')).toBe(false);
+      expect(SLUG_MARK_ADDITIONS.test('\u{1ADE}')).toBe(false);
+      expect(SLUG_MARK_ADDITIONS.test('a')).toBe(false);
+    });
+
+    it('folds the characters a newer Unicode decomposes to ASCII', () => {
+      expect(deriveDestinationSlug('a\ua7f1b')).toBe('asb');
+
+      const alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789';
+      [...alphabet].forEach((expected, offset) => {
+        const codePoint = 0x1ccd6 + offset;
+        const name = `a${String.fromCodePoint(codePoint)}b`;
+        expect(deriveDestinationSlug(name), `U+${codePoint.toString(16).toUpperCase()}`).toBe(
+          `a${expected}b`
+        );
+      });
     });
 
     it('derives a slug of at most 50 characters', async () => {

@@ -709,7 +709,12 @@ export interface CreateDestinationInput {
 
   /** @deprecated Never accepted by the API and no longer sent; destinations have no description column. */
   description?: string;
-  /** @deprecated Renamed to `timeoutMs`; the value is sent under that name, and `timeoutMs` wins if both are set. */
+  /**
+   * @deprecated Renamed to `timeoutMs`; the value is sent under that name, and `timeoutMs` wins
+   * if both are set. Milliseconds, 1000-60000, as everywhere else in this SDK — the value was
+   * never reaching the API before, so a call that passed seconds here landed on the 30000
+   * default and now 400s instead. Multiply by 1000.
+   */
   timeout?: number;
   /** @deprecated Never accepted by the API and no longer sent; retries are configured per route, not per destination. */
   retryCount?: number;
@@ -743,7 +748,12 @@ export interface UpdateDestinationInput {
 
   /** @deprecated Never accepted by the API and no longer sent; destinations have no description column. */
   description?: string;
-  /** @deprecated Renamed to `timeoutMs`; the value is sent under that name, and `timeoutMs` wins if both are set. */
+  /**
+   * @deprecated Renamed to `timeoutMs`; the value is sent under that name, and `timeoutMs` wins
+   * if both are set. Milliseconds, 1000-60000, as everywhere else in this SDK — the value was
+   * never reaching the API before, so a call that passed seconds here landed on the 30000
+   * default and now 400s instead. Multiply by 1000.
+   */
   timeout?: number;
   /** @deprecated Never accepted by the API and no longer sent; retries are configured per route, not per destination. */
   retryCount?: number;

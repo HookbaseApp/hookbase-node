@@ -57,6 +57,49 @@ const DESTINATION_RENAMES: Partial<Record<DestinationInputKey, DestinationInputK
 const SLUG_MAX_LENGTH = 50;
 
 /**
+ * The slug fold's answer depends on the Unicode version the *runtime* ships, and the four SDKs'
+ * runtimes do not agree: `package.json` allows Node 18, whose V8 is two Unicode releases behind the
+ * current one, and CPython 3.12 and Go 1.22 are both on Unicode 15.0. Left alone, the same name
+ * slugs differently depending on which SDK — and which Node — created the destination, which is the
+ * thing this derivation exists to prevent.
+ *
+ * These tables pin the fold to one Unicode version regardless of runtime. On a runtime whose own
+ * data already agrees they are no-ops, so they only ever close a gap. The same tables live in
+ * `python-sdk/src/hookbase/models/_wire.py` (`_SLUG_MARK_ADDITIONS`, `_SLUG_MARK_RECLASSIFIED`,
+ * `_SLUG_FOLD_ADDITIONS`), `go-sdk/slug_fold.go` and
+ * `dotnet-sdk/src/Hookbase/Models/Destinations/Destination.cs`. Change one and you change all four.
+ *
+ * Exported for `wire-format.test.ts`, which checks the ranges against a list written out
+ * independently — on a current Node `\p{Mn}` already covers them, so a behavioural test alone
+ * cannot see a typo here. Not re-exported from the package index.
+ */
+export const SLUG_MARK_ADDITIONS =
+  /^[\u{0897}\u{1ACF}-\u{1ADD}\u{1AE0}-\u{1AEB}\u{10D69}-\u{10D6D}\u{10EFA}-\u{10EFC}\u{113BB}-\u{113C0}\u{113CE}\u{113D0}\u{113D2}\u{113E1}-\u{113E2}\u{11B60}\u{11B62}-\u{11B64}\u{11B66}\u{11F5A}\u{1611E}-\u{16129}\u{1612D}-\u{1612F}\u{1E5EE}-\u{1E5EF}\u{1E6E3}\u{1E6E6}\u{1E6EE}-\u{1E6EF}\u{1E6F5}]$/u;
+
+/** Every combining mark the fold drops: the category, plus the 75 code points Unicode 15.0 lacks. */
+const SLUG_MARKS = new RegExp(
+  `[\\p{Mn}${SLUG_MARK_ADDITIONS.source.slice('^['.length, -']$'.length)}]`,
+  'gu'
+);
+
+/**
+ * AHOM CONSONANT SIGN MEDIAL RA: `Mn` in Unicode 15.0 and `Mc` — a *spacing* mark — from 15.1. A
+ * runtime on 15.0 matches it as a mark above, so it is put back rather than stripped: it separates,
+ * the way any other non-alphanumeric does.
+ */
+const SLUG_MARK_RECLASSIFIED = '\u{1171E}';
+
+/**
+ * The same version skew one layer down, in NFKD itself. These characters are unassigned before
+ * Unicode 16, so an older runtime leaves them alone and they become separators, while a current one
+ * decomposes them to ASCII. Folding them first makes NFKD's answer the same on both: U+A7F1 (Latin
+ * Extended-D) decomposes to `S`, and U+1CCD6-U+1CCF9 are 36 contiguous additions in Symbols for
+ * Legacy Computing Supplement decomposing to A-Z and then 0-9 in order.
+ */
+const SLUG_FOLD_ADDITIONS = /[\u{A7F1}\u{1CCD6}-\u{1CCF9}]/gu;
+const SLUG_FOLD_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+
+/**
  * Copy an input into a request body, dropping the keys the API has never accepted and moving the
  * renamed ones to their current name.
  *
@@ -129,13 +172,16 @@ export function endpointRequestBody(
  */
 export function deriveDestinationSlug(name: string): string {
   const slug = name
+    .replace(SLUG_FOLD_ADDITIONS, (char) =>
+      char === '\u{A7F1}' ? 'S' : SLUG_FOLD_ALPHABET[char.codePointAt(0)! - 0x1ccd6]
+    )
     .normalize('NFKD')
     // Combining marks left behind by the decomposition above, so é becomes e, not e + mark.
     // The whole Mn category, not just the U+0300-U+036F block: a mark outside that block (Arabic,
     // Hebrew, Devanagari) would otherwise survive to become a hyphen here while the Python and
     // .NET SDKs, which drop the category, removed it -- the same name would slug differently
     // depending on which SDK created the destination.
-    .replace(/\p{Mn}/gu, '')
+    .replace(SLUG_MARKS, (mark) => (mark === SLUG_MARK_RECLASSIFIED ? mark : ''))
     .toLowerCase()
     // Any run of non-alphanumerics becomes a single hyphen, which is the collapse step as well.
     .replace(/[^a-z0-9]+/g, '-')
