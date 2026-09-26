@@ -1,4 +1,5 @@
 import { BaseResource, type ApiClient } from './base';
+import { createDestinationBody, updateDestinationBody } from './wire';
 import type {
   Destination,
   CreateDestinationInput,
@@ -82,7 +83,7 @@ export class DestinationsResource extends BaseResource {
     const response = await this.client.request<{
       destination: Destination;
     }>('POST', '/api/destinations', {
-      body: data,
+      body: createDestinationBody(data),
       requestOptions: options,
     });
     return response.destination;
@@ -97,7 +98,7 @@ export class DestinationsResource extends BaseResource {
     options?: RequestOptions
   ): Promise<void> {
     await this.client.request('PATCH', `/api/destinations/${encodeURIComponent(id)}`, {
-      body: data,
+      body: updateDestinationBody(data),
       requestOptions: options,
     });
   }

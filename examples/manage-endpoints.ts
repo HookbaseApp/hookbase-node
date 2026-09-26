@@ -19,20 +19,26 @@ async function createEndpoint(appId: string) {
   const endpoint = await hookbase.endpoints.create(appId, {
     url: 'https://api.example.com/webhooks',
     description: 'Production webhook endpoint',
-    // Optional: Custom headers sent with each webhook
+    // Optional: Custom headers sent with each webhook. The API takes these as
+    // [{ name, value }]; a record is converted to that shape for you.
     headers: {
       'X-Custom-Header': 'value',
     },
-    // Optional: Rate limiting
-    rateLimit: 100, // requests per period
-    rateLimitPeriod: 60, // seconds
-    // Optional: Filter to specific event types
-    filterTypes: ['order.*', 'payment.completed'],
-    // Optional: Your metadata
-    metadata: {
-      environment: 'production',
-      region: 'us-east-1',
-    },
+    // Optional: Per-delivery timeout, 1-120 seconds
+    timeoutSeconds: 30,
+    // Optional: Rate limiting, in requests per second (0 = unlimited)
+    rateLimitPerSecond: 100,
+    // Optional: Which responses count as a success
+    successStatusCodes: [200, 201, 202, '2xx'],
+    // Optional: Retry schedule, in seconds
+    backoffType: 'exponential',
+    retryDelays: [5, 30, 300],
+    // Optional: Circuit breaker
+    circuitFailureThreshold: 5,
+    circuitSuccessThreshold: 2,
+    circuitCooldownSeconds: 120,
+    // Which event types reach this endpoint is a subscription, not a field here:
+    // await hookbase.subscriptions.create({ endpointId: endpoint.id, eventTypeId });
   });
 
   console.log('Created endpoint:', endpoint.id);

@@ -113,9 +113,15 @@ const endpoint = await hookbase.endpoints.get('app_123', 'ep_456');
 const endpoint = await hookbase.endpoints.create('app_123', {
   url: 'https://example.com/webhooks',
   description: 'Production endpoint',
+  // Headers go on the wire as [{ name, value }]; a record is converted for you.
   headers: { 'X-Custom': 'value' },
-  rateLimit: 100,
-  rateLimitPeriod: 60,
+  timeoutSeconds: 30,
+  rateLimitPerSecond: 100,
+  successStatusCodes: [200, 201, '2xx'],
+  backoffType: 'exponential',
+  retryDelays: [5, 30, 300],
+  circuitFailureThreshold: 5,
+  circuitCooldownSeconds: 120,
 });
 console.log('Secret:', endpoint.secret); // Save this!
 

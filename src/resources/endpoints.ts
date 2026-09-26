@@ -1,4 +1,5 @@
 import { BaseResource, type ApiClient } from './base';
+import { endpointRequestBody } from './wire';
 import type {
   Endpoint,
   EndpointWithSecret,
@@ -102,7 +103,7 @@ export class EndpointsResource extends BaseResource {
     const response = await this.client.request<ApiResponse<EndpointWithSecret>>(
       'POST',
       '/api/webhook-endpoints',
-      { body: { ...data, applicationId }, requestOptions: options }
+      { body: { ...endpointRequestBody(data), applicationId }, requestOptions: options }
     );
     return response.data;
   }
@@ -119,7 +120,7 @@ export class EndpointsResource extends BaseResource {
     const response = await this.client.request<ApiResponse<Endpoint>>(
       'PATCH',
       `/api/webhook-endpoints/${endpointId}`,
-      { body: data, requestOptions: options }
+      { body: endpointRequestBody(data), requestOptions: options }
     );
     return response.data;
   }

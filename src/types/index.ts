@@ -91,27 +91,104 @@ export interface EndpointWithSecret extends Endpoint {
   secret: string;
 }
 
+/** Backoff curve used between delivery retries. */
+export type BackoffType = 'exponential' | 'linear' | 'fixed';
+
+/**
+ * One custom delivery header.
+ *
+ * The API takes headers as an array of name/value pairs — a `Record<string, string>` body has
+ * always been a 400, not a silent drop, so this is the one field here that was failing out loud.
+ * A record is still accepted by the inputs below and converted to this shape for you, in
+ * insertion order.
+ */
+export interface EndpointHeader {
+  name: string;
+  value: string;
+}
+
+/** Headers as an endpoint input accepts them: the wire shape, or a record converted to it. */
+export type EndpointHeadersInput = EndpointHeader[] | Record<string, string>;
+
+/**
+ * A status code that counts as a successful delivery: an exact code (`200`) or a class pattern
+ * (`'2xx'`).
+ */
+export type SuccessStatusCode = number | string;
+
 export interface CreateEndpointInput {
   url: string;
+  /** Max 500 characters. */
   description?: string;
-  filterTypes?: string[];
-  rateLimit?: number;
-  rateLimitPeriod?: number;
-  headers?: Record<string, string>;
-  metadata?: Record<string, unknown>;
+  /** Custom headers sent with every delivery, max 10. A record is converted to `[{name, value}]`. */
+  headers?: EndpointHeadersInput;
+  /** Per-delivery HTTP timeout in seconds, 1-120. The API defaults to 30. */
+  timeoutSeconds?: number;
+  /** Delivery rate cap in requests per second, 0-1000. 0 means unlimited. */
+  rateLimitPerSecond?: number;
+  /** Status codes that count as success, max 20. Exact codes, or patterns like `'2xx'`. */
+  successStatusCodes?: SuccessStatusCode[];
+  backoffType?: BackoffType;
+  /** Retry delays in seconds, max 10 entries, each 1-86400. */
+  retryDelays?: number[];
+  /** Informational note recording which IPs this endpoint expects traffic from, max 1000. */
+  ipAllowlistNotes?: string;
+  /** Deliver through the dedicated static-IP proxy. */
   useStaticIp?: boolean;
+  /** Consecutive failures that open the circuit, 1-100. */
+  circuitFailureThreshold?: number;
+  /** Consecutive successes that close a half-open circuit, 1-100. */
+  circuitSuccessThreshold?: number;
+  /** Seconds an open circuit waits before it probes again, 10-3600. */
+  circuitCooldownSeconds?: number;
+
+  /** @deprecated Never accepted by the API and no longer sent; subscribe the endpoint to event types instead (`client.subscriptions.create`). */
+  filterTypes?: string[];
+  /** @deprecated Renamed to `rateLimitPerSecond`; the value is sent under that name, and `rateLimitPerSecond` wins if both are set. */
+  rateLimit?: number;
+  /** @deprecated Never accepted by the API and no longer sent; the rate limit is always per second. */
+  rateLimitPeriod?: number;
+  /** @deprecated Never accepted by the API on endpoints and no longer sent; endpoints have no metadata column. */
+  metadata?: Record<string, unknown>;
 }
 
 export interface UpdateEndpointInput {
   url?: string;
-  description?: string;
+  /** Max 500 characters. Null clears it. */
+  description?: string | null;
   isDisabled?: boolean;
-  filterTypes?: string[];
-  rateLimit?: number;
-  rateLimitPeriod?: number;
-  headers?: Record<string, string>;
-  metadata?: Record<string, unknown>;
+  /** Why the endpoint was disabled, max 500 characters. Only read when `isDisabled` is true. */
+  disabledReason?: string;
+  /** Custom headers sent with every delivery, max 10. A record is converted to `[{name, value}]`. Pass `[]` to clear. */
+  headers?: EndpointHeadersInput;
+  /** Per-delivery HTTP timeout in seconds, 1-120. */
+  timeoutSeconds?: number;
+  /** Delivery rate cap in requests per second, 0-1000. 0 means unlimited. */
+  rateLimitPerSecond?: number;
+  /** Status codes that count as success, max 20. Null resets to the 2xx default. */
+  successStatusCodes?: SuccessStatusCode[] | null;
+  backoffType?: BackoffType | null;
+  /** Retry delays in seconds, max 10 entries, each 1-86400. Null resets to the default schedule. */
+  retryDelays?: number[] | null;
+  /** Informational note recording which IPs this endpoint expects traffic from, max 1000. */
+  ipAllowlistNotes?: string | null;
+  /** Deliver through the dedicated static-IP proxy. */
   useStaticIp?: boolean;
+  /** Consecutive failures that open the circuit, 1-100. */
+  circuitFailureThreshold?: number;
+  /** Consecutive successes that close a half-open circuit, 1-100. */
+  circuitSuccessThreshold?: number;
+  /** Seconds an open circuit waits before it probes again, 10-3600. */
+  circuitCooldownSeconds?: number;
+
+  /** @deprecated Never accepted by the API and no longer sent; subscribe the endpoint to event types instead (`client.subscriptions.create`). */
+  filterTypes?: string[];
+  /** @deprecated Renamed to `rateLimitPerSecond`; the value is sent under that name, and `rateLimitPerSecond` wins if both are set. */
+  rateLimit?: number;
+  /** @deprecated Never accepted by the API and no longer sent; the rate limit is always per second. */
+  rateLimitPeriod?: number;
+  /** @deprecated Never accepted by the API on endpoints and no longer sent; endpoints have no metadata column. */
+  metadata?: Record<string, unknown>;
 }
 
 export interface ListEndpointsParams extends PaginationParams {
@@ -578,17 +655,24 @@ export interface Destination {
 
 export interface CreateDestinationInput {
   name: string;
+  /**
+   * URL-safe identifier, `^[a-z0-9-]+$`, max 50 characters.
+   *
+   * Required by the API. Omit it and one is derived from `name` rather than letting the request
+   * 400 — pass it explicitly whenever the slug matters, since it is part of how the destination
+   * is addressed and cannot be changed afterwards.
+   */
   slug?: string;
-  description?: string;
   type?: DestinationType;
+  /** Required for `type: 'http'`; warehouse and queue destinations leave it unset. */
   url?: string;
   method?: HttpMethod;
+  /** Sent as a record — this is the shape the destinations API takes, unlike endpoint headers. */
   headers?: Record<string, string>;
   authType?: AuthType;
   authConfig?: Record<string, unknown>;
-  timeout?: number;
-  retryCount?: number;
-  retryInterval?: number;
+  /** Request timeout in milliseconds, 1000-60000. The API defaults to 30000. */
+  timeoutMs?: number;
   throttle?: {
     mode: 'off' | 'rate' | 'concurrency';
     rateLimit?: number;
@@ -601,19 +685,27 @@ export interface CreateDestinationInput {
   useStaticIp?: boolean;
   batchSize?: number;
   batchWindowSeconds?: number;
+
+  /** @deprecated Never accepted by the API and no longer sent; destinations have no description column. */
+  description?: string;
+  /** @deprecated Renamed to `timeoutMs`; the value is sent under that name, and `timeoutMs` wins if both are set. */
+  timeout?: number;
+  /** @deprecated Never accepted by the API and no longer sent; retries are configured per route, not per destination. */
+  retryCount?: number;
+  /** @deprecated Never accepted by the API and no longer sent; retries are configured per route, not per destination. */
+  retryInterval?: number;
 }
 
 export interface UpdateDestinationInput {
   name?: string;
-  description?: string;
   url?: string;
   method?: HttpMethod;
+  /** Sent as a record — this is the shape the destinations API takes, unlike endpoint headers. */
   headers?: Record<string, string>;
   authType?: AuthType;
   authConfig?: Record<string, unknown>;
-  timeout?: number;
-  retryCount?: number;
-  retryInterval?: number;
+  /** Request timeout in milliseconds, 1000-60000. */
+  timeoutMs?: number;
   throttle?: {
     mode: 'off' | 'rate' | 'concurrency';
     rateLimit?: number;
@@ -627,6 +719,15 @@ export interface UpdateDestinationInput {
   useStaticIp?: boolean;
   batchSize?: number;
   batchWindowSeconds?: number;
+
+  /** @deprecated Never accepted by the API and no longer sent; destinations have no description column. */
+  description?: string;
+  /** @deprecated Renamed to `timeoutMs`; the value is sent under that name, and `timeoutMs` wins if both are set. */
+  timeout?: number;
+  /** @deprecated Never accepted by the API and no longer sent; retries are configured per route, not per destination. */
+  retryCount?: number;
+  /** @deprecated Never accepted by the API and no longer sent; retries are configured per route, not per destination. */
+  retryInterval?: number;
 }
 
 export interface ListDestinationsParams {
