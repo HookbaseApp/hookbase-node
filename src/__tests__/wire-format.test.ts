@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hookbase } from '../client';
 import { HookbaseError } from '../errors';
+import { deriveDestinationSlug } from '../resources/wire';
 import type {
   CreateDestinationInput,
   CreateEndpointInput,
@@ -443,6 +444,41 @@ describe('wire format', () => {
       const slug = sentBody().slug as string;
       expect(slug).toBe(expected);
       expect(slug).toMatch(/^[a-z0-9-]+$/);
+    });
+
+    // The cross-SDK slug contract. All four SDKs carry this exact table, so a change to any one
+    // implementation shows up as a failure rather than as two SDKs quietly deriving different
+    // slugs from the same destination name. Keep it identical to:
+    //   python-sdk/tests/resources/test_destinations.py  (CROSS_SDK_SLUG_CASES)
+    //   go-sdk/destinations_test.go                      (crossSDKSlugCases)
+    //   dotnet-sdk/tests/.../DestinationSlugTests.cs     (CrossSdkSlugCases)
+    // Note Æ/Ø/Đ/Ł do not decompose under NFKD and so are dropped rather than folded
+    // ('Ærø Ømega' -> 'r-mega'); that is agreed-upon behaviour, not an accident to fix in
+    // one SDK alone.
+    it.each([
+      ['Café EU', 'cafe-eu'],
+      ['Acme Orders (EU)', 'acme-orders-eu'],
+      ['My Backend (EU)', 'my-backend-eu'],
+      ['  spaced  out  ', 'spaced-out'],
+      ['UPPER CASE', 'upper-case'],
+      ['ünïcödé nämes', 'unicode-names'],
+      [
+        'a-very-long-destination-name-that-runs-well-past-the-fifty-character-limit',
+        'a-very-long-destination-name-that-runs-well-past-t',
+      ],
+      ['trailing---hyphens---', 'trailing-hyphens'],
+      ['123 numeric', '123-numeric'],
+      ['Ærø Ømega', 'r-mega'],
+      ['\ufb01le ligature', 'file-ligature'],
+      ['Mixed 123 ABC xyz', 'mixed-123-abc-xyz'],
+      ["don't stop", 'don-t-stop'],
+      ['a', 'a'],
+    ])('cross-SDK contract: %j derives %j', (name, expected) => {
+      expect(deriveDestinationSlug(name)).toBe(expected);
+    });
+
+    it('cross-SDK contract: a name with no alphanumerics throws', () => {
+      expect(() => deriveDestinationSlug('\u2603\u2603\u2603')).toThrow(HookbaseError);
     });
 
     it('derives a slug of at most 50 characters', async () => {
