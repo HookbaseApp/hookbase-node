@@ -685,4 +685,37 @@ describe('wire format', () => {
       expect(sentBody()).toEqual({ name: 'Renamed' });
     });
   });
+
+  /**
+   * POST /api/api-keys has no schema at all -- the route destructures `expiresIn` (seconds) off
+   * the body. So `expiresInDays` was not read and not refused: 201, and a key with no expiry.
+   * A caller who asked for 90 days got a permanent key. These assert the seconds on the wire,
+   * because a types-only test passes throughout that bug.
+   */
+  describe('POST /api/api-keys', () => {
+    it('converts expiresInDays to expiresIn seconds', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ apiKey: {}, key: 'whr_x' }));
+
+      await client.apiKeys.create({ name: 'CI', scopes: ['read'], expiresInDays: 90 });
+
+      expect(sentBody()).toEqual({ name: 'CI', scopes: ['read'], expiresIn: 7776000 });
+    });
+
+    it('never sends expiresInDays, the key the API ignores', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ apiKey: {}, key: 'whr_x' }));
+
+      await client.apiKeys.create({ name: 'CI', expiresInDays: 1 });
+
+      expect(sentBody()).not.toHaveProperty('expiresInDays');
+      expect(sentBody().expiresIn).toBe(86400);
+    });
+
+    it('omits expiresIn entirely when no expiry was asked for', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ apiKey: {}, key: 'whr_x' }));
+
+      await client.apiKeys.create({ name: 'Permanent' });
+
+      expect(sentBody()).toEqual({ name: 'Permanent' });
+    });
+  });
 });

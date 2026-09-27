@@ -1,4 +1,5 @@
 import { HookbaseError } from '../errors';
+import type { CreateApiKeyInput } from './apiKeys';
 import type {
   Application,
   CreateDestinationInput,
@@ -200,6 +201,29 @@ export function deriveDestinationSlug(name: string): string {
   }
 
   return slug;
+}
+
+/**
+ * Body for POST /api/api-keys, converting the expiry from days to the seconds the API reads.
+ *
+ * The route takes `expiresIn` in **seconds** and destructures it off the body directly -- there is
+ * no schema on that endpoint, so an `expiresInDays` key was neither read nor refused. The request
+ * returned 201 and the key was created with no expiry at all: a caller who asked for a 90-day key
+ * got a permanent one, and nothing in the response said so.
+ *
+ * Days stay the SDK's input unit rather than being renamed to seconds. `expiresInDays` is a real
+ * API field on portal tokens, so the name is not wrong here, just the unit -- and the CLI has
+ * always done this same conversion (`cli/src/lib/api.ts`).
+ */
+export function createApiKeyBody(input: CreateApiKeyInput): Record<string, unknown> {
+  const { expiresInDays, ...rest } = input;
+  const body: Record<string, unknown> = { ...rest };
+
+  if (expiresInDays !== undefined) {
+    body.expiresIn = expiresInDays * 24 * 60 * 60;
+  }
+
+  return body;
 }
 
 /** Body for POST /api/destinations. Fills in `slug` when the caller left it out. */

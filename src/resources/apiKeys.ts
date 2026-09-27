@@ -1,4 +1,5 @@
 import { BaseResource, type ApiClient } from './base';
+import { createApiKeyBody } from './wire';
 import type { RequestOptions } from '../types';
 
 export interface ApiKey {
@@ -18,7 +19,12 @@ export interface ApiKeyWithSecret extends ApiKey {
 
 export interface CreateApiKeyInput {
   name: string;
+  /** Permissions for the key: `read`, `write`, `delete` (default: `['read', 'write']`) */
   scopes?: string[];
+  /**
+   * Days until the key expires (default: never). Converted to the `expiresIn` seconds the API
+   * reads; see `createApiKeyBody` in `./wire`.
+   */
   expiresInDays?: number;
 }
 
@@ -52,7 +58,7 @@ export class ApiKeysResource extends BaseResource {
       data?: ApiKeyWithSecret;
       apiKey?: ApiKeyWithSecret;
     }>('POST', '/api/api-keys', {
-      body: data,
+      body: createApiKeyBody(data),
       requestOptions: options,
     });
     return response.data ?? response.apiKey ?? (response as unknown as ApiKeyWithSecret);
