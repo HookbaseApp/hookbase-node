@@ -5,6 +5,7 @@ import type {
   CreateEndpointInput,
   EndpointHeader,
   EndpointHeadersInput,
+  Endpoint,
   UpdateDestinationInput,
   UpdateEndpointInput,
 } from '../types';
@@ -233,4 +234,38 @@ export function updateDestinationBody(input: UpdateDestinationInput): Record<str
 export function withApplicationAliases<T extends Application>(application: T): T {
   application.uid = application.externalId;
   return application;
+}
+
+/**
+ * Normalise an endpoint response.
+ *
+ * Two pieces of long-standing drift, both invisible to tsc because the declared types said the
+ * opposite of what arrived:
+ *
+ *  - `headers` is an array of `{name, value}` on the wire (and `[]` when empty), while `Endpoint`
+ *    has always declared a `Record<string, string>`. So `endpoint.headers['X-Tenant']` type-checked
+ *    and was `undefined` at runtime. The array is kept on `headerList` and folded into the record,
+ *    in arrival order, which is what python's model validator does with the same response.
+ *  - `filterTypes`, `rateLimit`, `rateLimitPeriod` and `metadata` are declared non-optional and the
+ *    API has no such columns. They are filled with null so reading them yields the documented
+ *    "always null" rather than `undefined`.
+ *
+ * Mutates and returns the same object, so a field the API adds later still reaches the caller.
+ */
+export function withEndpointAliases<T extends Endpoint>(endpoint: T): T {
+  const wire = endpoint as unknown as { headers?: unknown };
+  const list = Array.isArray(wire.headers) ? (wire.headers as EndpointHeader[]) : [];
+  endpoint.headerList = list;
+  if (Array.isArray(wire.headers)) {
+    const record: Record<string, string> = {};
+    for (const header of list) {
+      if (header && typeof header.name === 'string') record[header.name] = String(header.value ?? '');
+    }
+    endpoint.headers = record;
+  }
+  endpoint.filterTypes ??= null;
+  endpoint.rateLimit ??= null;
+  endpoint.rateLimitPeriod ??= null;
+  endpoint.metadata ??= null;
+  return endpoint;
 }

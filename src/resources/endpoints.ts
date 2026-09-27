@@ -1,5 +1,5 @@
 import { BaseResource, type ApiClient } from './base';
-import { endpointRequestBody } from './wire';
+import { endpointRequestBody, withEndpointAliases } from './wire';
 import type {
   Endpoint,
   EndpointWithSecret,
@@ -38,7 +38,7 @@ export class EndpointsResource extends BaseResource {
       requestOptions: options,
     });
     return {
-      data: response.data,
+      data: response.data.map(withEndpointAliases),
       total: response.data.length,
       limit: params.limit ?? 50,
       offset: 0,
@@ -68,7 +68,7 @@ export class EndpointsResource extends BaseResource {
       });
 
       for (const item of response.data) {
-        yield item;
+        yield withEndpointAliases(item);
       }
 
       hasMore = response.pagination?.hasMore ?? false;
@@ -89,7 +89,7 @@ export class EndpointsResource extends BaseResource {
       `/api/webhook-endpoints/${endpointId}`,
       { requestOptions: options }
     );
-    return response.data;
+    return withEndpointAliases(response.data);
   }
 
   /**
@@ -105,7 +105,7 @@ export class EndpointsResource extends BaseResource {
       '/api/webhook-endpoints',
       { body: { ...endpointRequestBody(data), applicationId }, requestOptions: options }
     );
-    return response.data;
+    return withEndpointAliases(response.data);
   }
 
   /**
@@ -122,7 +122,7 @@ export class EndpointsResource extends BaseResource {
       `/api/webhook-endpoints/${endpointId}`,
       { body: endpointRequestBody(data), requestOptions: options }
     );
-    return response.data;
+    return withEndpointAliases(response.data);
   }
 
   /**
@@ -193,7 +193,9 @@ export class EndpointsResource extends BaseResource {
       successRate: ep.totalMessages > 0
         ? (ep.totalSuccesses / ep.totalMessages) * 100
         : 0,
-      averageLatency: 0,
+      // The API returns this as avgResponseTimeMs. It was hardcoded to 0 because `Endpoint` had no
+      // field for it, so every caller of getStats saw a latency of zero on every endpoint.
+      averageLatency: ep.avgResponseTimeMs ?? 0,
       recentFailures: 0,
     };
   }

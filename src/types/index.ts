@@ -97,23 +97,88 @@ export interface Endpoint {
   applicationId: string;
   url: string;
   description: string | null;
-  secret: string;
+
+  /** First twelve characters of the signing secret, followed by `...`. */
+  secretPrefix: string;
+  hasSecret: boolean;
+  /** Increments on every rotation. */
+  secretVersion: number;
+
+  /**
+   * Custom delivery headers.
+   *
+   * The API sends these as an array of `{name, value}` and `[]` when there are none. The SDK folds
+   * that into a record, in the order the array arrived, because this property has always been typed
+   * as one — the array is on `headerList` if you need the wire shape.
+   */
+  headers: Record<string, string> | null;
+  /** The headers exactly as the API sends them. */
+  headerList: EndpointHeader[];
+
+  /** Per-delivery HTTP timeout in seconds. */
+  timeoutSeconds: number;
+
   isDisabled: boolean;
+  disabledAt: string | null;
+  disabledReason: string | null;
+
+  /** Delivery rate cap in requests per second. 0 means unlimited. */
+  rateLimitPerSecond: number;
+  /** Status codes counted as success, or null for the 200-299 default. */
+  successStatusCodes: SuccessStatusCode[] | null;
+  /** Null means the platform default (exponential). */
+  backoffType: BackoffType | null;
+  /** Explicit retry delays in seconds, or null for the default schedule. */
+  retryDelays: number[] | null;
+  /** Informational note recording which IPs this endpoint expects traffic from. */
+  ipAllowlistNotes: string | null;
+  /** Whether deliveries go through the dedicated static-IP proxy. */
+  useStaticIp: boolean;
+
   circuitState: CircuitState;
   circuitOpenedAt: string | null;
-  filterTypes: string[] | null;
-  rateLimit: number | null;
-  rateLimitPeriod: number | null;
-  headers: Record<string, string> | null;
-  metadata: Record<string, unknown> | null;
-  useStaticIp: boolean;
+  circuitFailureCount: number;
+  circuitFailureThreshold: number;
+  circuitSuccessThreshold: number;
+  circuitCooldownSeconds: number;
+
   totalMessages: number;
   totalSuccesses: number;
   totalFailures: number;
+  avgResponseTimeMs: number | null;
+  lastSuccessAt: string | null;
+  lastFailureAt: string | null;
+  lastResponseStatus: number | null;
+
+  isVerified: boolean;
+  verifiedAt: string | null;
+
   createdAt: string;
   updatedAt: string;
+  createdBy: string | null;
+  apiKeyId: string | null;
+
+  /** Present on list responses only. */
+  subscriptionCount?: number;
+
+  /**
+   * @deprecated Only `endpoints.create` returns the signing secret, and only once. Every other
+   * response masks it, so this property was typed `string` while being `undefined` at runtime
+   * everywhere except a create. Read it off the `EndpointWithSecret` a create returns, or read
+   * `secretPrefix`.
+   */
+  secret?: string;
+  /** @deprecated The API has no such column and has never returned it; always null. Event-type filtering lives on subscriptions. */
+  filterTypes: string[] | null;
+  /** @deprecated The API has no such column and has never returned it; always null. Read `rateLimitPerSecond`. */
+  rateLimit: number | null;
+  /** @deprecated The API has no such column and has never returned it; always null. The endpoint rate limit is per second. */
+  rateLimitPeriod: number | null;
+  /** @deprecated The API has no such column and has never returned it; always null. Applications carry metadata, endpoints do not. */
+  metadata: Record<string, unknown> | null;
 }
 
+/** What `endpoints.create` returns: an endpoint plus the one plaintext view of its secret. */
 export interface EndpointWithSecret extends Endpoint {
   secret: string;
 }
