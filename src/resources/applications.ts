@@ -1,4 +1,5 @@
 import { BaseResource, type ApiClient } from './base';
+import { withApplicationAliases } from './wire';
 import type {
   Application,
   CreateApplicationInput,
@@ -34,7 +35,7 @@ export class ApplicationsResource extends BaseResource {
       requestOptions: options,
     });
     return {
-      data: response.data,
+      data: response.data.map(withApplicationAliases),
       total: response.data.length,
       limit: params.limit ?? 50,
       offset: params.offset ?? 0,
@@ -63,7 +64,7 @@ export class ApplicationsResource extends BaseResource {
       });
 
       for (const item of response.data) {
-        yield item;
+        yield withApplicationAliases(item);
       }
 
       hasMore = response.pagination?.hasMore ?? false;
@@ -80,7 +81,7 @@ export class ApplicationsResource extends BaseResource {
       `/api/webhook-applications/${id}`,
       { requestOptions: options }
     );
-    return response.data;
+    return withApplicationAliases(response.data);
   }
 
   /**
@@ -92,7 +93,7 @@ export class ApplicationsResource extends BaseResource {
       `/api/webhook-applications/by-external-id/${encodeURIComponent(uid)}`,
       { requestOptions: options }
     );
-    return response.data;
+    return withApplicationAliases(response.data);
   }
 
   /**
@@ -113,7 +114,7 @@ export class ApplicationsResource extends BaseResource {
       '/api/webhook-applications',
       { body, requestOptions: options }
     );
-    return response.data;
+    return withApplicationAliases(response.data);
   }
 
   /**
@@ -129,7 +130,7 @@ export class ApplicationsResource extends BaseResource {
       `/api/webhook-applications/${id}`,
       { body: data, requestOptions: options }
     );
-    return response.data;
+    return withApplicationAliases(response.data);
   }
 
   /**
@@ -161,6 +162,6 @@ export class ApplicationsResource extends BaseResource {
         requestOptions: options,
       }
     );
-    return response.data;
+    return withApplicationAliases(response.data);
   }
 }

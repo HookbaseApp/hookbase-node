@@ -1,5 +1,6 @@
 import { HookbaseError } from '../errors';
 import type {
+  Application,
   CreateDestinationInput,
   CreateEndpointInput,
   EndpointHeader,
@@ -215,4 +216,21 @@ export function createDestinationBody(input: CreateDestinationInput): Record<str
 /** Body for PATCH /api/destinations/:id. A destination's slug cannot be changed, so none is added. */
 export function updateDestinationBody(input: UpdateDestinationInput): Record<string, unknown> {
   return toRequestBody(input, DESTINATION_STALE_KEYS, DESTINATION_RENAMES);
+}
+
+/**
+ * Fill in `Application.uid` from the `externalId` the API actually sends.
+ *
+ * This is the one place the drift ran the other way. `Application` declared `uid: string`, the API
+ * has never sent a key by that name, and nothing mapped between them — so the property was typed
+ * as a present string while being `undefined` at runtime, and tsc had no complaint to make about
+ * code that read it. Every other SDK does the same mirroring (python in a model validator, go in
+ * UnmarshalJSON), so `uid` keeps working everywhere while `externalId` is the name to read.
+ *
+ * Mutates and returns the same object rather than spreading into a copy, so a field the API adds
+ * later still reaches the caller without this function knowing about it.
+ */
+export function withApplicationAliases<T extends Application>(application: T): T {
+  application.uid = application.externalId;
+  return application;
 }

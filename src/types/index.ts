@@ -38,10 +38,37 @@ export interface Application {
   id: string;
   name: string;
   organizationId: string;
-  uid: string;
+  externalId: string;
   metadata: Record<string, unknown> | null;
+
+  /** Null when unset. `null` and `0` are different answers, so this is not defaulted. */
+  rateLimitPerSecond: number | null;
+  rateLimitPerMinute: number | null;
+  rateLimitPerHour: number | null;
+
+  isDisabled: boolean;
+  disabledAt: string | null;
+  disabledReason: string | null;
+
+  totalEndpoints: number;
+  totalMessagesSent: number;
+  totalMessagesFailed: number;
+  lastEventAt: string | null;
+
+  createdBy: string | null;
+  apiKeyId: string | null;
   createdAt: string;
   updatedAt: string;
+
+  /**
+   * @deprecated The API calls this `externalId` and has never sent a key named `uid`, so this
+   * property was typed `string` while being `undefined` at runtime. Read `externalId`. The SDK
+   * fills this in from `externalId` on every response so existing code keeps working.
+   */
+  uid: string;
+
+  /** Set on create and get-or-create responses only; absent elsewhere. */
+  sendEventUrl?: string;
 }
 
 export interface CreateApplicationInput {

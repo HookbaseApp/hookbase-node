@@ -52,7 +52,9 @@ describe('Resource Methods', () => {
     });
 
     it('should get application by UID', async () => {
-      const mockApp = { id: 'app_123', name: 'Test App', uid: 'customer_123' };
+      // externalId, not uid: that is the key the API sends. The SDK mirrors it onto the
+      // deprecated `uid` property, which is what the assertion below checks.
+      const mockApp = { id: 'app_123', name: 'Test App', externalId: 'customer_123' };
       mockFetch.mockResolvedValueOnce({
         ok: true,
         status: 200,
@@ -115,7 +117,7 @@ describe('Resource Methods', () => {
     });
 
     it('should getOrCreate via upsert endpoint', async () => {
-      const mockApp = { id: 'app_123', name: 'New App', uid: 'uid_123' };
+      const mockApp = { id: 'app_123', name: 'New App', externalId: 'uid_123' };
       mockFetch.mockResolvedValueOnce({
         ok: true,
         status: 200,
@@ -137,7 +139,7 @@ describe('Resource Methods', () => {
     });
 
     it('should getOrCreate - create new via upsert', async () => {
-      const mockApp = { id: 'app_123', name: 'New App', uid: 'uid_123' };
+      const mockApp = { id: 'app_123', name: 'New App', externalId: 'uid_123' };
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
