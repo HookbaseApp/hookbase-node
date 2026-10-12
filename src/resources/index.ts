@@ -18,3 +18,4 @@ export { AnalyticsResource } from './analytics';
 export { ApiKeysResource } from './apiKeys';
 export { TunnelsResource } from './tunnels';
 export { CronJobsResource } from './cronJobs';
+export { ProvidersResource } from './providers';

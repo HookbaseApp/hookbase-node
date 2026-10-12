@@ -39,6 +39,7 @@ export {
   ApiKeysResource,
   TunnelsResource,
   CronJobsResource,
+  ProvidersResource,
 } from './resources';
 
 // Type exports
@@ -96,7 +97,9 @@ export type {
   CreatePortalTokenInput,
 
   // Sources (inbound)
+  KnownSourceProvider,
   SourceProvider,
+  PendingVerification,
   DedupStrategy,
   IpFilterMode,
   Source,
@@ -104,6 +107,18 @@ export type {
   CreateSourceInput,
   UpdateSourceInput,
   ListSourcesParams,
+
+  // Provider catalog
+  ProviderSecretSource,
+  ProviderSignatureKind,
+  ProviderSignatureVerificationSummary,
+  ProviderSignatureVerification,
+  ProviderEventType,
+  CatalogProvider,
+  ProviderCatalogList,
+  CatalogProviderDetail,
+  ProviderEvents,
+  ListCatalogProvidersParams,
 
   // Destinations (inbound)
   HttpMethod,

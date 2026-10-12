@@ -495,47 +495,103 @@ export interface VerifyOptions {
 // ============================================
 
 /**
- * Providers the API will accept for a source.
+ * Providers the API accepts for a source today.
  *
- * Mirrors `SUPPORTED_SIGNATURE_PROVIDERS` in the API (`api/src/utils/signature-schemes.ts`),
- * which is derived from the signature scheme table rather than restated. Regenerate with
- * `npx tsx scripts/print-source-enums.ts` in the api package; do not hand-extend this union,
- * because a value the API does not accept is a 400 the type system promised would not happen.
- *
- * Removed in the 2026-09 correction: `sendgrid`, `mailgun` and `linear`. All three were
- * advertised here from the beginning and none was ever accepted by the API. SendGrid signs
- * with ECDSA and Mailgun puts the signature in the POST body, so neither fits this scheme
- * model at all; Linear's scheme is real but unverified against its docs, so wiring it would
- * mean guessing. Use `custom` for all three.
+ * Mirrors `SUPPORTED_SIGNATURE_PROVIDERS` in the API (`api/src/utils/signature-schemes.ts`): 71
+ * signature schemes plus the aliases `svix`, `clerk`, `resend`, `render`, `etsy`, `stytch` (all of
+ * `standard-webhooks`) and `generic` (of `custom`). Regenerate with
+ * `npx tsx scripts/print-source-enums.ts` in the api package.
  */
-export type SourceProvider =
+export type KnownSourceProvider =
+  | 'adyen'
   | 'airtable'
   | 'asana'
+  | 'auth0'
+  | 'aws-sns'
+  | 'bigcommerce'
   | 'bitbucket'
+  | 'braintree'
   | 'calendly'
+  | 'chargebee'
+  | 'circleci'
+  | 'clerk'
+  | 'clickup'
+  | 'cloudflare'
+  | 'coinbase-commerce'
   | 'custom'
+  | 'datadog'
+  | 'discord'
+  | 'docusign'
+  | 'etsy'
+  | 'freshdesk'
   | 'generic'
   | 'github'
   | 'gitlab'
+  | 'gitlab-signing-token'
+  | 'gocardless'
+  | 'grafana'
+  | 'grafana-hmac'
+  | 'grafana-hmac-timestamped'
   | 'heroku'
+  | 'hubspot'
   | 'intercom'
+  | 'jira'
+  | 'klaviyo'
+  | 'launchdarkly'
   | 'lemonsqueezy'
+  | 'linear'
+  | 'mailchimp'
+  | 'mailgun'
+  | 'mollie'
+  | 'netlify'
+  | 'newrelic'
   | 'notion'
+  | 'okta'
   | 'paddle'
+  | 'pagerduty'
+  | 'paypal'
+  | 'pipedrive'
+  | 'postmark'
+  | 'railway'
   | 'razorpay'
+  | 'render'
+  | 'resend'
+  | 'segment'
+  | 'sendgrid'
   | 'sentry'
   | 'shopify'
   | 'slack'
+  | 'square'
   | 'standard-webhooks'
   | 'stripe'
+  | 'stytch'
+  | 'supabase'
+  | 'supabase-auth-hooks'
   | 'svix'
+  | 'telegram'
+  | 'terraform-cloud'
+  | 'trello'
   | 'twilio'
   | 'typeform'
+  | 'vercel'
+  | 'whatsapp'
+  | 'wise'
+  | 'wise-sandbox'
+  | 'woocommerce'
   | 'workos'
+  | 'zendesk'
   | 'zoom';
 
 /**
- * Corrected alongside `SourceProvider`: `header` and `event_id` were never accepted, and the
+ * A source's provider: any of {@link KnownSourceProvider}, which editors still autocomplete, or
+ * any other string. The API adds providers faster than this package ships, so a closed union
+ * would make a source with a newer provider a type error in code that only reads it. The API
+ * validates the value on create and update and answers an unknown one with a 400.
+ */
+export type SourceProvider = KnownSourceProvider | (string & {});
+
+/**
+ * Corrected in 2026-09: `header` and `event_id` were never accepted, and the
  * three values the API actually defaults to and documents were missing. `auto` is the default.
  */
 export type DedupStrategy = 'auto' | 'provider_id' | 'payload_hash' | 'idempotency_key' | 'none';
@@ -547,6 +603,11 @@ export type IpFilterMode = 'none' | 'allowlist' | 'denylist' | 'both';
  * The signing secret is never included: GET and PATCH responses carry `hasSigningSecret` and the
  * last four characters instead. The full value is returned exactly twice — by `create()`, which
  * resolves to a {@link SourceWithSecret}, and by `revealSecret()`.
+ *
+ * `hasSigningSecret: false` is not always a problem; check the two flags beside it.
+ * `verifiesWithoutSecret` means the provider signs with a key Hookbase already holds (Wise, AWS
+ * SNS), so events are verified with nothing set. `awaitingSigningSecret` means the vendor issues
+ * the secret only after the URL is registered with it (Asana, Notion) and it has not been set yet.
  */
 export interface Source {
   id: string;
@@ -559,6 +620,13 @@ export interface Source {
   hasSigningSecret: boolean;
   /** Last four characters of the signing secret, prefixed with `...`, or null if none is set. */
   signingSecretLast4: string | null;
+  /** The provider verifies with a key Hookbase already holds (`wise`, `wise-sandbox`, `aws-sns`):
+   *  there is no secret to set, and `hasSigningSecret` stays false on a fully verified source. */
+  verifiesWithoutSecret: boolean;
+  /** The vendor issues the secret only once this URL is registered with it (`asana`, `notion`) and
+   *  it has not been set yet; events are unverified until it is. For Notion, see
+   *  `sources.getPendingVerification()`. */
+  awaitingSigningSecret: boolean;
   /** Reject events whose signature fails verification. Defaults to false: a failing event is
    *  flagged with `signatureValid: false` and delivered anyway. */
   rejectInvalidSignatures: boolean;
@@ -593,8 +661,26 @@ export type IngestMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD';
 
 /** What `create()` returns: a source plus the one look at its signing secret you get. */
 export interface SourceWithSecret extends Source {
-  signingSecret: string;
+  /** The signing secret in full, this once. `null` when there is none to show: the provider
+   *  verifies without one (`verifiesWithoutSecret`), the vendor issues it after registration
+   *  (`awaitingSigningSecret`), or the provider does not sign. */
+  signingSecret: string | null;
+  /** Meta providers (`whatsapp`) only: the verify token to paste into Meta's webhook setup, in
+   *  full, this once. `sources.verifyToken()` reveals it later. */
+  verifyToken?: string;
   ingestUrl: string;
+}
+
+/**
+ * A verification token a vendor (Notion) delivered to the ingest URL during registration. The
+ * request carrying it was unauthenticated, so it is held: paste `token` into the vendor's verify
+ * form, and once the vendor accepts it call `sources.adoptPendingVerification()`.
+ */
+export interface PendingVerification {
+  provider: string;
+  token: string;
+  receivedAt: string;
+  clientIp: string | null;
 }
 
 export interface CreateSourceInput {
@@ -603,9 +689,19 @@ export interface CreateSourceInput {
   slug: string;
   provider?: SourceProvider;
   description?: string;
-  /** Supply your own secret to match what the provider is already configured with. Omit it and
-   *  the API generates one, returned once on the created source. */
+  /**
+   * What to supply depends on the provider (the catalog's `signatureVerification.secretSource`;
+   * see `providers.get()`):
+   * - `provider`: the vendor issues it. Required for several (`standard-webhooks` and its
+   *   aliases, `airtable`, `gitlab-signing-token`, `supabase-auth-hooks`, `jira`, `discord`,
+   *   `sendgrid`); a missing or malformed one is a 400.
+   * - `operator`: omit it and the API generates one, returned once on the created source.
+   * - `public_key`: the vendor's public key (PEM or base64).
+   * - `built_in` (`wise`, `wise-sandbox`, `aws-sns`): send nothing; any secret is a 400.
+   */
   signingSecret?: string;
+  /** Meta providers (`whatsapp`) only; a 400 for any other. Omit it and the API generates one. */
+  verifyToken?: string;
   /** Reject events whose signature fails verification. Defaults to false. */
   rejectInvalidSignatures?: boolean;
   rateLimitPerMinute?: number | null;
@@ -633,7 +729,10 @@ export interface UpdateSourceInput {
   description?: string | null;
   provider?: SourceProvider | null;
   isActive?: boolean;
+  /** `null` removes the secret. */
   signingSecret?: string | null;
+  /** Meta providers (`whatsapp`) only. `''` or `null` generates a fresh one. */
+  verifyToken?: string | null;
   rejectInvalidSignatures?: boolean;
   rateLimitPerMinute?: number | null;
   ipFilterMode?: IpFilterMode;
@@ -649,6 +748,110 @@ export interface UpdateSourceInput {
   transientMode?: boolean;
   /** Restrict the ingest endpoint to these HTTP verbs. Pass [] to accept any method again. */
   allowedMethods?: IngestMethod[] | null;
+}
+
+// ============================================
+// Provider Catalog (public, no auth)
+// ============================================
+
+/**
+ * Who produces a provider's credential. `provider`: the vendor issues it, paste it as
+ * `signingSecret`. `operator`: Hookbase generates it when omitted, paste it into the vendor.
+ * `public_key`: paste the vendor's public key. `built_in`: nothing to enter, events are still
+ * verified. `none`: the vendor does not sign. Open-ended, like {@link SourceProvider}.
+ */
+export type ProviderSecretSource =
+  | 'provider' | 'operator' | 'public_key' | 'built_in' | 'none' | (string & {});
+
+/** The verification scheme's kind. Open-ended for the same reason. */
+export type ProviderSignatureKind =
+  | 'hmac' | 'shared_secret' | 'bespoke' | 'asymmetric' | (string & {});
+
+/** The secret fields a create flow needs, as catalog list items carry them. */
+export interface ProviderSignatureVerificationSummary {
+  supported: boolean;
+  /** Absent for catalog entries with no scheme (those that fall back to `custom`). */
+  kind?: ProviderSignatureKind;
+  secretSource: ProviderSecretSource;
+  secretLabel: string;
+  secretPlaceholder?: string;
+  /** The vendor issues the secret only after the source's URL is registered with it. */
+  secretAfterRegistration?: boolean;
+}
+
+/** The full block from `providers.get()`. */
+export interface ProviderSignatureVerification extends ProviderSignatureVerificationSummary {
+  algorithm: string;
+  headerName: string;
+  secretLocationHint: string;
+  /** One sentence on where the value comes from or goes, in the vendor's own UI wording. */
+  secretInstruction: string;
+  /** A required shape: `whsec_`-prefixed base64, or a generated HTTP Basic auth pair. */
+  secretFormat?: 'whsec' | 'basic_auth' | (string & {});
+  /** Present for Meta providers, which also use a verify token. */
+  verifyToken?: { label: string; instruction: string };
+}
+
+export interface ProviderEventType {
+  type: string;
+  description: string;
+}
+
+/**
+ * A provider as the catalog list returns it. `id` is the catalog's id; `hookbaseProvider` is the
+ * value to use as a source's `provider`. They differ for some entries (catalog `mollie-nextgen`
+ * is provider `mollie`, and several entries map to `custom`).
+ */
+export interface CatalogProvider {
+  id: string;
+  name: string;
+  category: string;
+  description: string;
+  icon: string;
+  eventTypeCount: number;
+  hookbaseProvider: SourceProvider;
+  hasSignatureVerification: boolean;
+  hasIpRanges: boolean;
+  /** `null` when the provider has none. Absent from API versions that predate the summary on
+   *  list items; fall back to `providers.get(id)` then. */
+  signatureVerification?: ProviderSignatureVerificationSummary | null;
+}
+
+export interface ProviderCatalogList {
+  providers: CatalogProvider[];
+  categories: string[];
+  total: number;
+}
+
+/** One provider in full, from `providers.get()`. */
+export interface CatalogProviderDetail {
+  id: string;
+  name: string;
+  category: string;
+  description: string;
+  website: string;
+  docsUrl: string;
+  icon: string;
+  hookbaseProvider: SourceProvider;
+  signatureVerification: ProviderSignatureVerification | null;
+  eventTypes: ProviderEventType[];
+  /** Example payloads keyed by event type. */
+  samplePayloads: Record<string, unknown>;
+  ipRanges: string[] | null;
+  setupGuide: string[];
+}
+
+export interface ProviderEvents {
+  providerId: string;
+  providerName: string;
+  eventTypes: ProviderEventType[];
+  samplePayloads: Record<string, unknown>;
+}
+
+export interface ListCatalogProvidersParams {
+  category?: string;
+  /** Matched against name, description and category. */
+  search?: string;
 }
 
 export interface ListSourcesParams {
@@ -1029,6 +1232,7 @@ export interface EventDebugInfo {
 export interface ListEventsParams {
   limit?: number;
   offset?: number;
+  /** A source id or slug. One that matches no source is a 404, not an empty list. */
   sourceId?: string;
   eventType?: string;
   search?: string;
@@ -1040,6 +1244,7 @@ export interface ListEventsParams {
 
 export interface ExportEventsParams {
   format?: 'json' | 'csv';
+  /** A source id or slug. One that matches no source is a 404. */
   sourceId?: string;
   eventType?: string;
   search?: string;

@@ -20,6 +20,7 @@ import {
   ApiKeysResource,
   TunnelsResource,
   CronJobsResource,
+  ProvidersResource,
 } from './resources';
 import {
   HookbaseApiError,
@@ -40,7 +41,7 @@ const DEFAULT_RETRIES = 3;
 // Must match the version in package.json; version-sync.test.ts fails if it drifts. It rode at
 // 2.1.0 through the 2.x and 3.0 releases, so every User-Agent those published reported the
 // wrong SDK version to the API.
-const SDK_VERSION = '3.1.0';
+const SDK_VERSION = '3.2.0';
 
 /**
  * Hookbase API client
@@ -98,6 +99,8 @@ export class Hookbase implements ApiClient {
   public readonly filters: FiltersResource;
   /** Schemas resource (inbound) */
   public readonly schemas: SchemasResource;
+  /** Provider catalog: what each provider signs with and which secret it needs */
+  public readonly providers: ProvidersResource;
   /** Dead letter queue resource (outbound) */
   public readonly dlq: DlqResource;
   /** Analytics resource */
@@ -139,6 +142,7 @@ export class Hookbase implements ApiClient {
     this.transforms = new TransformsResource(this);
     this.filters = new FiltersResource(this);
     this.schemas = new SchemasResource(this);
+    this.providers = new ProvidersResource(this);
 
     // Initialize admin resources
     this.analytics = new AnalyticsResource(this);
