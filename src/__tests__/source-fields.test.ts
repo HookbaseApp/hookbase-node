@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import type { CreateSourceInput, UpdateSourceInput, Source, SourceWithSecret } from '../types';
+import type {
+  CreateSourceInput,
+  UpdateSourceInput,
+  Source,
+  SourceWithSecret,
+  SourceProvider,
+  KnownSourceProvider,
+} from '../types';
 
 /**
  * The field names this SDK puts on the wire, as POST/PATCH /api/sources accept them.
@@ -14,14 +21,14 @@ import type { CreateSourceInput, UpdateSourceInput, Source, SourceWithSecret } f
  * why a rename here has to be deliberate.
  */
 const CREATE_FIELDS = [
-  'name', 'slug', 'provider', 'description', 'signingSecret', 'rejectInvalidSignatures',
+  'name', 'slug', 'provider', 'description', 'signingSecret', 'verifyToken', 'rejectInvalidSignatures',
   'rateLimitPerMinute', 'ipFilterMode', 'ipAllowlist', 'ipDenylist', 'encryptFields',
   'maskFields', 'dedupEnabled', 'dedupStrategy', 'dedupWindowHours', 'dedupCustomHeader',
   'transientMode', 'allowedMethods',
 ] as const;
 
 const UPDATE_FIELDS = [
-  'name', 'description', 'provider', 'isActive', 'signingSecret', 'rejectInvalidSignatures',
+  'name', 'description', 'provider', 'isActive', 'signingSecret', 'verifyToken', 'rejectInvalidSignatures',
   'rateLimitPerMinute', 'ipFilterMode', 'ipAllowlist', 'ipDenylist', 'encryptFields',
   'maskFields', 'dedupEnabled', 'dedupStrategy', 'dedupWindowHours', 'dedupCustomHeader',
   'transientMode', 'allowedMethods',
@@ -35,6 +42,7 @@ const FULL_CREATE: Required<{ [K in typeof CREATE_FIELDS[number]]: CreateSourceI
   provider: 'stripe',
   description: 'Live charge events',
   signingSecret: 'whsec_abc',
+  verifyToken: 'vt_abc',
   rejectInvalidSignatures: true,
   rateLimitPerMinute: 600,
   ipFilterMode: 'allowlist',
@@ -56,6 +64,7 @@ const FULL_UPDATE: Required<{ [K in typeof UPDATE_FIELDS[number]]: UpdateSourceI
   provider: 'stripe',
   isActive: false,
   signingSecret: null,
+  verifyToken: null,
   rejectInvalidSignatures: true,
   rateLimitPerMinute: null,
   ipFilterMode: 'none',
@@ -107,5 +116,26 @@ describe('the fields this SDK sends are the fields the API accepts', () => {
     } as SourceWithSecret;
     expect(created.signingSecret).toBe('whsec_abc');
     expect(created.ingestUrl).toContain('/ingest/');
+  });
+
+  it('a created source may have no secret to show', () => {
+    const created = { signingSecret: null, verifiesWithoutSecret: true } as SourceWithSecret;
+    expect(created.signingSecret).toBeNull();
+  });
+});
+
+describe('provider is an open string', () => {
+  it('accepts every known provider and any other string', () => {
+    const known: KnownSourceProvider[] = ['wise', 'whatsapp', 'sendgrid', 'mailgun', 'linear'];
+    const future: SourceProvider = 'some-provider-added-next-month';
+    const input: CreateSourceInput = { name: 'X', slug: 'x', provider: future };
+    expect(known).toHaveLength(5);
+    expect(input.provider).toBe(future);
+  });
+
+  it('still rejects a known-provider typo where only known providers are allowed', () => {
+    // @ts-expect-error - 'stripee' is not a KnownSourceProvider
+    const typo: KnownSourceProvider = 'stripee';
+    expect(typo).toBe('stripee');
   });
 });

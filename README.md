@@ -280,6 +280,43 @@ const token = await hookbase.portalTokens.create('app_123', {
 await hookbase.portalTokens.revoke('app_123', 'ptk_456');
 ```
 
+### Sources (inbound)
+
+`provider` is any string: `KnownSourceProvider` lists the values the API accepts today, and an
+unknown one is a 400 from the API. Which secret a provider needs is in the provider catalog.
+
+```typescript
+// Find out which secret a provider needs before creating the source
+const catalogEntry = await hookbase.providers.get('stripe');
+console.log(catalogEntry.signatureVerification?.secretSource); // 'provider': paste the whsec_ secret
+
+const stripe = await hookbase.sources.create({
+  name: 'Stripe',
+  slug: 'stripe',
+  provider: 'stripe',
+  signingSecret: 'whsec_...', // vendor-issued: required, format-checked
+});
+
+// Providers that verify with no secret (wise, aws-sns) return signingSecret: null
+const wise = await hookbase.sources.create({ name: 'Wise', slug: 'wise', provider: 'wise' });
+wise.verifiesWithoutSecret; // true
+
+// WhatsApp (Meta) sources also carry a verify token
+const wa = await hookbase.sources.create({ name: 'WhatsApp', slug: 'wa', provider: 'whatsapp' });
+console.log(wa.verifyToken);
+await hookbase.sources.rotateVerifyToken(wa.id);
+
+// Notion parks its verification token until you adopt it
+const pending = await hookbase.sources.getPendingVerification('notion');
+await hookbase.sources.adoptPendingVerification('notion');
+
+// Rotate a Hookbase-generated secret (400 for vendor-issued, public-key and built-in ones)
+await hookbase.sources.rotateSecret('src_123');
+
+// sourceId filters take an id or a slug; an unknown one is a 404, not an empty list
+await hookbase.events.list({ sourceId: 'stripe' });
+```
+
 ## Webhook Verification
 
 Verify incoming webhooks in your application.
