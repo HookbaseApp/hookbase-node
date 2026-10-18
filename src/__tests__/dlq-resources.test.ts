@@ -63,9 +63,11 @@ describe('DLQ Resources', () => {
         data: {
           total: 42,
           byReason: { exhausted: 30, circuit_open: 12 },
-          topFailingEndpoints: [
+          // GET /dlq/stats sends byEndpoint and byEventType; topFailingEndpoints never existed.
+          byEndpoint: [
             { endpointId: 'ep_1', endpointUrl: 'https://failing.com/hook', count: 25 },
           ],
+          byEventType: [{ eventType: 'order.created', count: 40 }],
         },
       }));
 
@@ -73,7 +75,10 @@ describe('DLQ Resources', () => {
 
       expect(result.total).toBe(42);
       expect(result.byReason.exhausted).toBe(30);
-      expect(result.topFailingEndpoints).toHaveLength(1);
+      expect(result.byEndpoint).toHaveLength(1);
+      expect(result.byEventType[0]).toEqual({ eventType: 'order.created', count: 40 });
+      // Deprecated alias, mirrored from byEndpoint.
+      expect(result.topFailingEndpoints).toEqual(result.byEndpoint);
       expect(mockFetch).toHaveBeenCalledWith(
         expect.stringContaining('/api/outbound-messages/dlq/stats'),
         expect.objectContaining({ method: 'GET' })
@@ -100,23 +105,33 @@ describe('DLQ Resources', () => {
 
     it('should retry multiple DLQ messages', async () => {
       mockFetch.mockResolvedValueOnce(mockResponse({
+        // The shape POST /dlq/retry-bulk actually sends.
         data: {
-          total: 3,
-          retried: 2,
-          failed: 1,
-          results: [
-            { messageId: 'msg_1', status: 'retried', newMessageId: 'msg_r1' },
-            { messageId: 'msg_2', status: 'retried', newMessageId: 'msg_r2' },
-            { messageId: 'msg_3', status: 'error', error: 'Not found' },
+          queued: 2,
+          skipped: 1,
+          messages: [
+            { originalMessageId: 'msg_1', newMessageId: 'msg_r1' },
+            { originalMessageId: 'msg_2', newMessageId: 'msg_r2' },
           ],
         },
-      }));
+      }, 201));
 
       const result = await client.dlq.retryBulk(['msg_1', 'msg_2', 'msg_3']);
 
+      expect(result.queued).toBe(2);
+      expect(result.skipped).toBe(1);
+      expect(result.messages).toHaveLength(2);
+      expect(JSON.parse(mockFetch.mock.calls[0][1].body)).toEqual({
+        messageIds: ['msg_1', 'msg_2', 'msg_3'],
+      });
+      // Deprecated aliases, derived from the real fields.
+      expect(result.total).toBe(3);
       expect(result.retried).toBe(2);
       expect(result.failed).toBe(1);
-      expect(result.results).toHaveLength(3);
+      expect(result.results).toEqual([
+        { messageId: 'msg_1', status: 'queued', newMessageId: 'msg_r1' },
+        { messageId: 'msg_2', status: 'queued', newMessageId: 'msg_r2' },
+      ]);
     });
 
     it('should delete a DLQ message', async () => {
@@ -132,12 +147,13 @@ describe('DLQ Resources', () => {
 
     it('should bulk delete DLQ messages', async () => {
       mockFetch.mockResolvedValueOnce(mockResponse({
-        data: { total: 3, deleted: 3 },
+        data: { deleted: 3 },
       }));
 
       const result = await client.dlq.deleteBulk(['msg_1', 'msg_2', 'msg_3']);
 
       expect(result.deleted).toBe(3);
+      expect(result.total).toBe(3);
     });
 
     it('should iterate through all DLQ messages', async () => {

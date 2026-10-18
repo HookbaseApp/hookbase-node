@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createWebhook, Webhook } from '../webhooks/verify';
 import { HookbaseWebhookVerificationError } from '../errors';
@@ -210,6 +211,82 @@ describe('Webhook Verification', () => {
 
       const result = webhook.verify(payload, headers);
       expect(result).toEqual({ test: true });
+    });
+  });
+
+  describe('secret decoding (matches the API signer)', () => {
+    // Signed independently of the SDK: HMAC-SHA256 over id.timestamp.payload with the RAW key
+    // bytes, base64 — what api/src/utils/outbound-signature.ts computeSignature does.
+    const signWithKey = (key: Buffer, id: string, ts: string, payload: string) =>
+      createHmac('sha256', key).update(`${id}.${ts}.${payload}`).digest('base64');
+    const payload = JSON.stringify({ ok: true });
+    const id = 'wh_msg_1';
+    const now = () => Math.floor(Date.now() / 1000).toString();
+    const keyBytes = Buffer.from('0123456789abcdef0123456789abcdef', 'utf8');
+
+    it('decodes an operational-webhook whsec_op_ secret as base64 after the op_ infix', () => {
+      const secret = `whsec_op_${keyBytes.toString('base64')}`;
+      const ts = now();
+      const sig = signWithKey(keyBytes, id, ts, payload);
+      const result = createWebhook(secret).verify(payload, {
+        'webhook-id': id,
+        'webhook-timestamp': ts,
+        'webhook-signature': `v1,${sig}`,
+      });
+      expect(result).toEqual({ ok: true });
+    });
+
+    it('decodes a legacy 64-character hex secret as hex', () => {
+      const hex = keyBytes.toString('hex');
+      expect(hex).toHaveLength(64);
+      const ts = now();
+      const sig = signWithKey(keyBytes, id, ts, payload);
+      for (const secret of [`whsec_${hex}`, hex, hex.toUpperCase()]) {
+        expect(
+          createWebhook(secret).verify(payload, {
+            'webhook-id': id,
+            'webhook-timestamp': ts,
+            'webhook-signature': `v1,${sig}`,
+          })
+        ).toEqual({ ok: true });
+      }
+    });
+
+    it('still decodes a regular whsec_ secret as base64', () => {
+      const secret = `whsec_${keyBytes.toString('base64')}`;
+      const ts = now();
+      const sig = signWithKey(keyBytes, id, ts, payload);
+      expect(
+        createWebhook(secret).verify(payload, {
+          'webhook-id': id,
+          'webhook-timestamp': ts,
+          'webhook-signature': `v1,${sig}`,
+        })
+      ).toEqual({ ok: true });
+    });
+
+    it('verifies against either entry of a dual-signed rotation header', () => {
+      // During a rotation grace period the API sends `v1,<previous> v1,<current>`.
+      const previous = Buffer.from('previous-secret-previous-secret!', 'utf8');
+      const current = keyBytes;
+      const ts = now();
+      const header = `v1,${signWithKey(previous, id, ts, payload)} v1,${signWithKey(current, id, ts, payload)}`;
+      for (const key of [previous, current]) {
+        expect(
+          createWebhook(`whsec_${key.toString('base64')}`).verify(payload, {
+            'webhook-id': id,
+            'webhook-timestamp': ts,
+            'webhook-signature': header,
+          })
+        ).toEqual({ ok: true });
+      }
+      expect(() =>
+        createWebhook(`whsec_${Buffer.from('some-other-secret-entirely-xxxx!').toString('base64')}`).verify(payload, {
+          'webhook-id': id,
+          'webhook-timestamp': ts,
+          'webhook-signature': header,
+        })
+      ).toThrow(HookbaseWebhookVerificationError);
     });
   });
 

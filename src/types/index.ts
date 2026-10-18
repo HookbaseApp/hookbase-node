@@ -4,6 +4,15 @@
 
 export interface PaginationParams {
   limit?: number;
+  /**
+   * Opaque cursor from a previous page's `cursor` (the API's `pagination.nextCursor`). Pass it
+   * back verbatim to get the next page; never build or parse one.
+   */
+  cursor?: string;
+  /**
+   * @deprecated The outbound list endpoints page by cursor and have never read an offset, so
+   * every request with one returned page one again. No longer sent; pass `cursor` instead.
+   */
   offset?: number;
 }
 
@@ -16,9 +25,11 @@ export interface PaginatedResponse<T> {
 }
 
 /**
- * A `PaginatedResponse` for an endpoint that pages by opaque cursor rather than offset (DLQ is
- * the one resource on this signature). `cursor` is the value to pass back in as the next
- * request's `cursor` param; `null` once `hasMore` is `false`.
+ * A `PaginatedResponse` for an endpoint that pages by opaque cursor rather than offset (every
+ * outbound list: applications, endpoints, event types, subscriptions, messages and the DLQ).
+ * `cursor` is the value to pass back in as the next request's `cursor` param; `null` once
+ * `hasMore` is `false`. `total` is the size of this page, not of the whole result set, and
+ * `offset` is always 0.
  */
 export interface CursorPaginatedResponse<T> extends PaginatedResponse<T> {
   cursor: string | null;
@@ -288,6 +299,19 @@ export interface ListEndpointsParams extends PaginationParams {
   isDisabled?: boolean;
 }
 
+/** What `endpoints.rotateSecret` returns. */
+export interface RotateEndpointSecretResult {
+  /** The new signing secret (`whsec_...`). Shown once. */
+  secret: string;
+  /**
+   * Until this time deliveries are signed with both the new and the previous secret, so a
+   * receiver still holding the old one keeps verifying.
+   */
+  previousSecretExpiresAt: string;
+  /** The endpoint's secret version after the rotation. */
+  secretVersion: number;
+}
+
 export interface EndpointStats {
   totalMessages: number;
   totalSuccesses: number;
@@ -309,26 +333,60 @@ export interface EventType {
   description: string | null;
   category: string | null;
   schema: Record<string, unknown> | null;
+  schemaVersion: number | null;
+  examplePayload: unknown;
+  documentationUrl: string | null;
+  /** 0=Critical, 1=High, 2=Normal, 3=Low, 4=Bulk; null for the platform default. */
+  defaultPriority: number | null;
   isEnabled: boolean;
+  isDeprecated: boolean;
+  deprecatedAt: string | null;
+  deprecatedMessage: string | null;
+  isPublic: boolean;
+  publishedAt: string | null;
+  /** Present on list responses only. */
+  subscriptionCount?: number;
+  /** @deprecated The API has never sent this; `archive()` toggles `isEnabled`. Read `isEnabled`. */
   isArchived?: boolean;
   createdAt: string;
   updatedAt: string;
 }
 
 export interface CreateEventTypeInput {
+  /** Lowercase, optionally dot-separated (e.g. `order.created`), max 100. */
   name: string;
   displayName?: string;
   description?: string;
   category?: string;
+  /** JSON Schema for the payload; sent as the JSON string the API takes. */
   schema?: Record<string, unknown>;
+  /** Example payload; sent as the JSON string the API takes. */
+  examplePayload?: unknown;
+  documentationUrl?: string;
+  /** The API defaults to true. */
+  isEnabled?: boolean;
+  /** 0=Critical, 1=High, 2=Normal, 3=Low, 4=Bulk. */
+  defaultPriority?: number;
 }
 
 export interface UpdateEventTypeInput {
   displayName?: string;
   description?: string;
-  category?: string;
-  schema?: Record<string, unknown>;
+  /** Null clears it. */
+  category?: string | null;
+  /** Null clears it. */
+  schema?: Record<string, unknown> | null;
+  /** Null clears it. */
+  examplePayload?: unknown;
+  /** Null clears it. */
+  documentationUrl?: string | null;
   isEnabled?: boolean;
+  isDeprecated?: boolean;
+  /** Max 500. */
+  deprecatedMessage?: string;
+  isPublic?: boolean;
+  /** 0=Critical, 1=High, 2=Normal, 3=Low, 4=Bulk. Null resets to the default. */
+  defaultPriority?: number | null;
 }
 
 export interface ListEventTypesParams extends PaginationParams {
@@ -370,7 +428,19 @@ export interface ListSubscriptionsParams extends PaginationParams {
 // Message Types
 // ============================================
 
-export type MessageStatus = 'pending' | 'success' | 'failed' | 'exhausted';
+/**
+ * Outbound message status. Open-ended: the statuses below are the ones the API uses today, and a
+ * status added later still type-checks rather than being treated as impossible.
+ */
+export type MessageStatus =
+  | 'pending'
+  | 'processing'
+  | 'success'
+  | 'failed'
+  | 'awaiting_retry'
+  | 'exhausted'
+  | 'dlq'
+  | (string & {});
 
 export interface Message {
   id: string;
@@ -382,48 +452,136 @@ export interface Message {
   createdAt: string;
 }
 
+/**
+ * One delivery of an event to one endpoint, as `GET /outbound-messages` and
+ * `GET /outbound-messages/:id` return it. The fields marked "get only" are on the single-message
+ * response and absent from list items.
+ */
 export interface OutboundMessage {
   id: string;
-  messageId: string;
-  endpointId: string;
-  endpointUrl: string;
+  /** The outbound event this message delivers (what `send` returned as `eventId`). */
+  eventId: string;
   eventType: string;
+  applicationId: string;
+  applicationName?: string;
+  endpointId: string;
+  /** Undefined when the endpoint has since been deleted. */
+  endpointUrl?: string;
   status: MessageStatus;
   attempts: number;
   maxAttempts: number;
-  lastAttemptAt: string | null;
-  nextAttemptAt: string | null;
   lastResponseStatus: number | null;
-  lastResponseBody: string | null;
-  lastError: string | null;
-  deliveredAt: string | null;
+  lastErrorMessage: string | null;
   createdAt: string;
-  updatedAt: string;
+  completedAt: string | null;
+
+  /** Get only. */
+  subscriptionId?: string | null;
+  /** Get only. */
+  eventTypeId?: string | null;
+  /** Get only. */
+  lastErrorType?: string | null;
+  /** Get only. */
+  payloadKey?: string;
+  /** Get only. */
+  payloadSizeBytes?: number | null;
+  /** Get only. */
+  payloadHash?: string | null;
+  /** Get only. */
+  metadata?: unknown;
+  /** Get only. */
+  priority?: number | null;
+  /** Get only. */
+  endpointDescription?: string | null;
+  /** Get only. The stored payload, or null once retention has removed it. */
+  payload?: unknown;
+
+  /** @deprecated The API calls this `eventId`; the SDK mirrors it here. Read `eventId`. */
+  messageId: string;
+  /** @deprecated The API calls this `lastErrorMessage`; the SDK mirrors it here. Read `lastErrorMessage`. */
+  lastError: string | null;
+  /** @deprecated The API has never sent this; always null. Read the attempts (`listAttempts`). */
+  lastAttemptAt: string | null;
+  /** @deprecated The API has never sent this; always null. */
+  nextAttemptAt: string | null;
+  /** @deprecated The API has never sent this; always null. Read `responseBody` on the attempts. */
+  lastResponseBody: string | null;
+  /** @deprecated The API has never sent this; always null. Read `completedAt`. */
+  deliveredAt: string | null;
+  /** @deprecated The API has never sent this; always null. */
+  updatedAt: string | null;
 }
 
+/** One delivery attempt, as `GET /outbound-messages/:id/attempts` returns it. */
 export interface MessageAttempt {
   id: string;
-  outboundMessageId: string;
+  /** The outbound message this attempt belongs to. */
+  messageId: string;
   attemptNumber: number;
+  status: string;
   responseStatus: number | null;
-  responseBody: string | null;
   responseHeaders: Record<string, string> | null;
+  responseBody: string | null;
+  responseTimeMs: number | null;
+  totalTimeMs: number | null;
+  errorType: string | null;
+  errorMessage: string | null;
+  errorCode: string | null;
+  requestUrl: string | null;
+  requestHeaders: Record<string, string> | null;
+  requestBodySize: number | null;
+  triggeredBy: string | null;
+  triggeredByUser: string | null;
+  createdAt: string;
+  completedAt: string | null;
+
+  /** @deprecated The API calls this `messageId`; the SDK mirrors it here. */
+  outboundMessageId: string;
+  /** @deprecated The API calls this `errorMessage`; the SDK mirrors it here. */
   error: string | null;
+  /** @deprecated The API calls this `responseTimeMs`; the SDK mirrors it here. */
   latencyMs: number | null;
+  /** @deprecated The API calls this `createdAt`; the SDK mirrors it here. */
   attemptedAt: string;
 }
 
 export interface SendMessageInput {
   eventType: string;
   payload: Record<string, unknown>;
-  eventId?: string;
-  metadata?: Record<string, unknown>;
-  /** Specific endpoint IDs to send to (optional, defaults to all subscribed) */
+  /**
+   * Deliver to these endpoints only (max 100) instead of every subscribed endpoint. Sent as
+   * `endpointIds`, and also as `endpointId` when there is exactly one.
+   */
   endpointIds?: string[];
+  /** Deliver to this one endpoint only. Merged with `endpointIds`. */
+  endpointId?: string;
+  /**
+   * Makes the send safe to repeat: the API returns the first send's result for a repeated key
+   * instead of sending again. Max 255. Wins over `RequestOptions.idempotencyKey`. When neither is
+   * set the SDK generates one per `send` call, so its own retries cannot send twice.
+   */
+  idempotencyKey?: string;
+  /** Flat key/value pairs; values must be strings (max 1000), numbers, booleans or null. Max 50 keys. */
+  metadata?: Record<string, unknown>;
+  /** @deprecated The API has never accepted this field and stripped it. No longer sent; use `idempotencyKey` to deduplicate. */
+  eventId?: string;
 }
 
 export interface SendMessageResponse {
+  /** The outbound event created (or, for a repeated idempotency key, the original one). */
+  eventId: string;
+  /** How many outbound messages were queued — one per targeted endpoint. */
+  messagesQueued: number;
+  /** The endpoints the event was queued for. */
+  endpoints: Array<{ id: string; url: string }>;
+
+  /** @deprecated The API calls this `eventId`; the SDK mirrors it here. Read `eventId`. */
   messageId: string;
+  /**
+   * @deprecated The send response carries endpoints, not outbound messages: each entry's `id`
+   * is the ENDPOINT id, not a message id. Read `endpoints`, and list messages by `eventId`'s
+   * endpoints for message ids.
+   */
   outboundMessages: Array<{
     id: string;
     endpointId: string;
@@ -431,15 +589,29 @@ export interface SendMessageResponse {
   }>;
 }
 
+/** What replaying an outbound message (or retrying a DLQ one) returns. */
+export interface MessageReplayResult {
+  originalMessageId: string;
+  /** The id of the NEW outbound message carrying the replay. */
+  newMessageId: string;
+  /** `queued` today. */
+  status: string;
+}
+
 export interface ListMessagesParams extends PaginationParams {
   applicationId?: string;
+  endpointId?: string;
+  status?: MessageStatus;
   eventType?: string;
+  /** @deprecated The message list does not filter by date; ignored by the API. `export` does take it. */
   startDate?: string;
+  /** @deprecated The message list does not filter by date; ignored by the API. `export` does take it. */
   endDate?: string;
 }
 
 export interface ListOutboundMessagesParams extends PaginationParams {
   endpointId?: string;
+  /** @deprecated The message list has no event filter; this is ignored by the API. */
   messageId?: string;
   status?: MessageStatus;
   eventType?: string;
@@ -1472,53 +1644,90 @@ export interface SchemaValidationResult {
 
 export interface DlqMessage {
   id: string;
-  messageId: string;
-  endpointId: string;
-  endpointUrl?: string;
+  /** The outbound event this message delivers. */
+  eventId: string;
+  eventType: string;
   applicationId: string;
   applicationName?: string;
-  eventType: string;
-  status: string;
-  dlqReason: string | null;
-  dlqMovedAt: string | null;
+  endpointId: string;
+  /** Undefined when the endpoint has since been deleted. */
+  endpointUrl?: string;
+  status: MessageStatus;
   attempts: number;
   maxAttempts: number;
-  lastAttemptAt: string | null;
   lastResponseStatus: number | null;
-  lastError: string | null;
+  lastErrorType: string | null;
+  lastErrorMessage: string | null;
+  dlqReason: string | null;
+  dlqMovedAt: string | null;
+  dlqRetryCount: number | null;
+  dlqLastRetryAt: string | null;
   createdAt: string;
-  updatedAt: string;
+  completedAt: string | null;
+
+  /** @deprecated The API calls this `eventId`; the SDK mirrors it here. Read `eventId`. */
+  messageId: string;
+  /** @deprecated The API calls this `lastErrorMessage`; the SDK mirrors it here. Read `lastErrorMessage`. */
+  lastError: string | null;
+  /** @deprecated The API has never sent this; always null. */
+  lastAttemptAt: string | null;
+  /** @deprecated The API has never sent this; always null. */
+  updatedAt: string | null;
+}
+
+export interface DlqEndpointCount {
+  endpointId: string;
+  /** Undefined when the endpoint has since been deleted. */
+  endpointUrl?: string;
+  count: number;
 }
 
 export interface DlqStats {
   total: number;
+  /** Count per DLQ reason; a message with no reason is counted under `unknown`. */
   byReason: Record<string, number>;
-  topFailingEndpoints: Array<{
-    endpointId: string;
-    endpointUrl: string;
-    count: number;
-  }>;
+  /** The ten endpoints with the most DLQ messages, most first. */
+  byEndpoint: DlqEndpointCount[];
+  /** The ten event types with the most DLQ messages, most first. */
+  byEventType: Array<{ eventType: string; count: number }>;
+  /** @deprecated The API calls this `byEndpoint`; the SDK mirrors it here. Read `byEndpoint`. */
+  topFailingEndpoints: DlqEndpointCount[];
 }
 
 export interface ListDlqParams {
   limit?: number;
+  /** Opaque cursor from the previous page's `cursor`; pass it back verbatim. */
   cursor?: string;
   endpointId?: string;
   applicationId?: string;
-  dlqReason?: string;
+  /** Sent as the API's `reason` query param. */
+  reason?: string;
   eventType?: string;
+  /** ISO timestamp; DLQ messages moved there at or after this. */
+  startDate?: string;
+  /** ISO timestamp; DLQ messages moved there at or before this. */
+  endDate?: string;
+  /** @deprecated The API reads this filter as `reason` and ignored `dlqReason`. Sent as `reason`; `reason` wins if both are set. */
+  dlqReason?: string;
 }
 
-export interface DlqRetryResult {
-  originalMessageId: string;
-  newMessageId: string;
-  status: string;
-}
+export type DlqRetryResult = MessageReplayResult;
 
 export interface DlqBulkRetryResult {
+  /** How many messages were queued for retry. */
+  queued: number;
+  /** How many of the ids asked for were not in the DLQ (or not found) and were skipped. */
+  skipped: number;
+  /** One entry per queued message. */
+  messages: Array<{ originalMessageId: string; newMessageId: string }>;
+
+  /** @deprecated The API calls this `queued + skipped`; the SDK fills it in. */
   total: number;
+  /** @deprecated The API calls this `queued`; the SDK mirrors it here. */
   retried: number;
+  /** @deprecated The API calls this `skipped`; the SDK mirrors it here. */
   failed: number;
+  /** @deprecated The API calls this `messages`; the SDK fills it in from them (queued entries only). */
   results: Array<{
     messageId: string;
     status: string;
@@ -1528,8 +1737,10 @@ export interface DlqBulkRetryResult {
 }
 
 export interface DlqBulkDeleteResult {
-  total: number;
+  /** How many ids were submitted for deletion. */
   deleted: number;
+  /** @deprecated The API does not send this; the SDK mirrors `deleted` here. */
+  total: number;
 }
 
 // ============================================
@@ -1541,12 +1752,15 @@ export interface OutboundStatsSummary {
   processing: number;
   success: number;
   failed: number;
+  /** Retries handed to the cron sweep between attempts. */
+  awaitingRetry: number;
   exhausted: number;
   dlq: number;
   total: number;
 }
 
 export interface ExportOutboundParams {
+  /** The API defaults to json. With csv, `export` resolves to the CSV text. */
   format?: 'json' | 'csv';
   type?: 'events' | 'messages';
   startDate?: string;
@@ -1555,6 +1769,46 @@ export interface ExportOutboundParams {
   eventType?: string;
   applicationId?: string;
   limit?: number;
+}
+
+export interface OutboundEventExportRow {
+  id: string;
+  eventType: string;
+  applicationId: string | null;
+  labels: string | null;
+  status: string | null;
+  endpointsTargeted: number | null;
+  endpointsFiltered: number | null;
+  payloadSizeBytes: number | null;
+  idempotencyKey: string | null;
+  sourceIp: string | null;
+  createdAt: string;
+}
+
+export interface OutboundMessageExportRow {
+  id: string;
+  eventId: string;
+  eventType: string;
+  applicationId: string;
+  endpointId: string;
+  endpointUrl?: string;
+  status: MessageStatus;
+  attempts: number;
+  maxAttempts: number;
+  lastResponseStatus: number | null;
+  lastErrorMessage: string | null;
+  completedAt: string | null;
+  createdAt: string;
+}
+
+/** A JSON export. `events` is set for `type: 'events'` (the default), `messages` for `type: 'messages'`. */
+export interface OutboundExport {
+  exportedAt: string;
+  /** The organization's slug. */
+  organization: string;
+  count: number;
+  events?: OutboundEventExportRow[];
+  messages?: OutboundMessageExportRow[];
 }
 
 // ============================================

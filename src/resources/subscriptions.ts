@@ -4,7 +4,7 @@ import type {
   CreateSubscriptionInput,
   UpdateSubscriptionInput,
   ListSubscriptionsParams,
-  PaginatedResponse,
+  CursorPaginatedResponse,
   ApiResponse,
   RequestOptions,
 } from '../types';
@@ -20,27 +20,19 @@ export class SubscriptionsResource extends BaseResource {
   }
 
   /**
-   * List all subscriptions, optionally filtered by application/endpoint/eventType
+   * List subscriptions, optionally filtered by endpoint/event type, one page at a time. Pass the
+   * returned `cursor` back in as `{ cursor }` for the next page.
    */
   async list(
     applicationId: string,
     params: Omit<ListSubscriptionsParams, 'applicationId'> = {},
     options?: RequestOptions
-  ): Promise<PaginatedResponse<Subscription>> {
-    const response = await this.client.request<{
-      data: Subscription[];
-      pagination: { hasMore: boolean; nextCursor: string | null };
-    }>('GET', '/api/webhook-subscriptions', {
-      query: { ...this.buildQuery(params), applicationId },
-      requestOptions: options,
-    });
-    return {
-      data: response.data,
-      total: response.data.length,
-      limit: params.limit ?? 50,
-      offset: 0,
-      hasMore: response.pagination?.hasMore ?? false,
-    };
+  ): Promise<CursorPaginatedResponse<Subscription>> {
+    return this.listPage<Subscription>(
+      '/api/webhook-subscriptions',
+      { ...this.buildQuery(params), applicationId },
+      options
+    );
   }
 
   /**
@@ -51,26 +43,11 @@ export class SubscriptionsResource extends BaseResource {
     params: Omit<ListSubscriptionsParams, 'applicationId' | 'offset'> = {},
     options?: RequestOptions
   ): AsyncGenerator<Subscription> {
-    const limit = params.limit ?? 100;
-    let cursor: string | undefined;
-    let hasMore = true;
-
-    while (hasMore) {
-      const response = await this.client.request<{
-        data: Subscription[];
-        pagination: { hasMore: boolean; nextCursor: string | null };
-      }>('GET', '/api/webhook-subscriptions', {
-        query: { ...this.buildQuery(params), applicationId, limit, cursor },
-        requestOptions: options,
-      });
-
-      for (const item of response.data) {
-        yield item;
-      }
-
-      hasMore = response.pagination?.hasMore ?? false;
-      cursor = response.pagination?.nextCursor ?? undefined;
-    }
+    yield* this.iterate<Subscription>(
+      '/api/webhook-subscriptions',
+      { ...this.buildQuery(params), applicationId, limit: params.limit ?? 100 },
+      options
+    );
   }
 
   /**
@@ -180,7 +157,9 @@ export class SubscriptionsResource extends BaseResource {
         requestOptions: options,
       }
     );
-    return response.subscriptions;
+    // When every event type was already subscribed the API answers `{ created: 0, skipped }`
+    // with no `subscriptions` key at all.
+    return response.subscriptions ?? [];
   }
 
   /**
@@ -192,10 +171,10 @@ export class SubscriptionsResource extends BaseResource {
     eventTypeIds: string[],
     options?: RequestOptions
   ): Promise<{ created: number; skipped: number; subscriptions: Subscription[] }> {
-    return this.client.request<{
+    const response = await this.client.request<{
       created: number;
       skipped: number;
-      subscriptions: Subscription[];
+      subscriptions?: Subscription[];
     }>(
       'POST',
       '/api/webhook-subscriptions/bulk',
@@ -204,6 +183,7 @@ export class SubscriptionsResource extends BaseResource {
         requestOptions: options,
       }
     );
+    return { ...response, subscriptions: response.subscriptions ?? [] };
   }
 
   /**
@@ -214,10 +194,15 @@ export class SubscriptionsResource extends BaseResource {
     endpointId: string,
     options?: RequestOptions
   ): Promise<void> {
-    const subs = await this.list(applicationId, { endpointId }, options);
+    // Every page, not just the first: an endpoint with more than one page of subscriptions
+    // used to keep everything past page one.
+    const subs: Subscription[] = [];
+    for await (const sub of this.listAll(applicationId, { endpointId }, options)) {
+      subs.push(sub);
+    }
 
     await Promise.all(
-      subs.data.map((sub) =>
+      subs.map((sub) =>
         this.delete(applicationId, sub.id, options)
       )
     );

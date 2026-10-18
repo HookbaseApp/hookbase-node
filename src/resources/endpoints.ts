@@ -7,7 +7,8 @@ import type {
   CreateEndpointInput,
   UpdateEndpointInput,
   ListEndpointsParams,
-  PaginatedResponse,
+  RotateEndpointSecretResult,
+  CursorPaginatedResponse,
   ApiResponse,
   RequestOptions,
 } from '../types';
@@ -23,27 +24,20 @@ export class EndpointsResource extends BaseResource {
   }
 
   /**
-   * List all endpoints for an application
+   * List an application's endpoints, one page at a time. Pass the returned `cursor` back in as
+   * `{ cursor }` for the next page.
    */
   async list(
     applicationId: string,
     params: Omit<ListEndpointsParams, 'applicationId'> = {},
     options?: RequestOptions
-  ): Promise<PaginatedResponse<Endpoint>> {
-    const response = await this.client.request<{
-      data: Endpoint[];
-      pagination: { hasMore: boolean; nextCursor: string | null };
-    }>('GET', '/api/webhook-endpoints', {
-      query: { ...this.buildQuery(params), applicationId },
-      requestOptions: options,
-    });
-    return {
-      data: response.data.map(withEndpointAliases),
-      total: response.data.length,
-      limit: params.limit ?? 50,
-      offset: 0,
-      hasMore: response.pagination?.hasMore ?? false,
-    };
+  ): Promise<CursorPaginatedResponse<Endpoint>> {
+    return this.listPage<Endpoint>(
+      '/api/webhook-endpoints',
+      { ...this.buildQuery(params), applicationId },
+      options,
+      withEndpointAliases
+    );
   }
 
   /**
@@ -54,26 +48,12 @@ export class EndpointsResource extends BaseResource {
     params: Omit<ListEndpointsParams, 'applicationId' | 'offset'> = {},
     options?: RequestOptions
   ): AsyncGenerator<Endpoint> {
-    const limit = params.limit ?? 100;
-    let cursor: string | undefined;
-    let hasMore = true;
-
-    while (hasMore) {
-      const response = await this.client.request<{
-        data: Endpoint[];
-        pagination: { hasMore: boolean; nextCursor: string | null };
-      }>('GET', '/api/webhook-endpoints', {
-        query: { ...this.buildQuery(params), applicationId, limit, cursor },
-        requestOptions: options,
-      });
-
-      for (const item of response.data) {
-        yield withEndpointAliases(item);
-      }
-
-      hasMore = response.pagination?.hasMore ?? false;
-      cursor = response.pagination?.nextCursor ?? undefined;
-    }
+    yield* this.iterate<Endpoint>(
+      '/api/webhook-endpoints',
+      { ...this.buildQuery(params), applicationId, limit: params.limit ?? 100 },
+      options,
+      withEndpointAliases
+    );
   }
 
   /**
@@ -141,14 +121,18 @@ export class EndpointsResource extends BaseResource {
   }
 
   /**
-   * Rotate the signing secret for an endpoint
+   * Rotate the signing secret for an endpoint. The API keeps signing with the previous secret as
+   * well until `previousSecretExpiresAt` (one hour by default).
+   *
+   * Not retried automatically on a timeout or 5xx unless you pass `retries`: a rotation that did
+   * go through and is then repeated replaces the secret you were just handed.
    */
   async rotateSecret(
     applicationId: string,
     endpointId: string,
     options?: RequestOptions
-  ): Promise<{ secret: string }> {
-    return this.client.request<{ secret: string }>(
+  ): Promise<RotateEndpointSecretResult> {
+    return this.client.request<RotateEndpointSecretResult>(
       'POST',
       `/api/webhook-endpoints/${endpointId}/rotate-secret`,
       { requestOptions: options }

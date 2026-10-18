@@ -1,4 +1,10 @@
 import { BaseResource, type ApiClient } from './base';
+import {
+  withDlqBulkDeleteAliases,
+  withDlqBulkRetryAliases,
+  withDlqMessageAliases,
+  withDlqStatsAliases,
+} from './wire';
 import type {
   DlqMessage,
   DlqStats,
@@ -27,21 +33,12 @@ export class DlqResource extends BaseResource {
     params: ListDlqParams = {},
     options?: RequestOptions
   ): Promise<CursorPaginatedResponse<DlqMessage>> {
-    const response = await this.client.request<{
-      data: DlqMessage[];
-      pagination: { hasMore: boolean; nextCursor: string | null };
-    }>('GET', '/api/outbound-messages/dlq/messages', {
-      query: this.buildQuery(params),
-      requestOptions: options,
-    });
-    return {
-      data: response.data,
-      total: response.data.length,
-      limit: params.limit ?? 50,
-      offset: 0,
-      hasMore: response.pagination?.hasMore ?? false,
-      cursor: response.pagination?.nextCursor ?? null,
-    };
+    return this.listPage<DlqMessage>(
+      '/api/outbound-messages/dlq/messages',
+      this.dlqQuery(params),
+      options,
+      withDlqMessageAliases
+    );
   }
 
   /**
@@ -51,29 +48,22 @@ export class DlqResource extends BaseResource {
     params: Omit<ListDlqParams, 'cursor'> = {},
     options?: RequestOptions
   ): AsyncGenerator<DlqMessage> {
-    let cursor: string | undefined;
-    let hasMore = true;
+    yield* this.iterate<DlqMessage>(
+      '/api/outbound-messages/dlq/messages',
+      this.dlqQuery(params),
+      options,
+      withDlqMessageAliases
+    );
+  }
 
-    while (hasMore) {
-      const response = await this.client.request<{
-        data: DlqMessage[];
-        pagination: { hasMore: boolean; nextCursor: string | null };
-      }>('GET', '/api/outbound-messages/dlq/messages', {
-        query: { ...this.buildQuery(params), cursor },
-        requestOptions: options,
-      });
-
-      for (const item of response.data) {
-        yield item;
-      }
-
-      hasMore = response.pagination?.hasMore ?? false;
-      cursor = response.pagination?.nextCursor ?? undefined;
-    }
+  /** The API reads the reason filter as `reason`; `dlqReason` was silently ignored. */
+  private dlqQuery(params: ListDlqParams): Record<string, string | number | boolean | undefined> {
+    const { dlqReason, reason, ...rest } = params;
+    return { ...this.buildQuery(rest), reason: reason ?? dlqReason };
   }
 
   /**
-   * Get DLQ statistics including breakdown by reason and top failing endpoints
+   * Get DLQ statistics: totals by reason, and the top endpoints and event types
    */
   async getStats(options?: RequestOptions): Promise<DlqStats> {
     const response = await this.client.request<{ data: DlqStats }>(
@@ -81,7 +71,7 @@ export class DlqResource extends BaseResource {
       '/api/outbound-messages/dlq/stats',
       { requestOptions: options }
     );
-    return response.data;
+    return withDlqStatsAliases(response.data);
   }
 
   /**
@@ -111,7 +101,7 @@ export class DlqResource extends BaseResource {
       '/api/outbound-messages/dlq/retry-bulk',
       { body: { messageIds }, requestOptions: options }
     );
-    return response.data;
+    return withDlqBulkRetryAliases(response.data);
   }
 
   /**
@@ -140,6 +130,6 @@ export class DlqResource extends BaseResource {
       '/api/outbound-messages/dlq/bulk',
       { body: { messageIds }, requestOptions: options }
     );
-    return response.data;
+    return withDlqBulkDeleteAliases(response.data);
   }
 }

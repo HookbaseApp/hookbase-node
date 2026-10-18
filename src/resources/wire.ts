@@ -4,9 +4,15 @@ import type {
   Application,
   CreateDestinationInput,
   CreateEndpointInput,
+  DlqBulkDeleteResult,
+  DlqBulkRetryResult,
+  DlqMessage,
+  DlqStats,
   EndpointHeader,
   EndpointHeadersInput,
   Endpoint,
+  MessageAttempt,
+  OutboundMessage,
   UpdateDestinationInput,
   UpdateEndpointInput,
 } from '../types';
@@ -292,4 +298,77 @@ export function withEndpointAliases<T extends Endpoint>(endpoint: T): T {
   endpoint.rateLimitPeriod ??= null;
   endpoint.metadata ??= null;
   return endpoint;
+}
+
+/**
+ * Normalise an outbound message (list item or single get).
+ *
+ * The SDK declared `messageId` and `lastError` where the API sends `eventId` and
+ * `lastErrorMessage`, plus five timestamps/bodies the API has no such field for — every one of
+ * them `undefined` at runtime while typed as present. The real names are now declared; the old
+ * ones are mirrored from them (or filled with null) so existing code keeps reading something.
+ *
+ * Mutates and returns the same object, so a field the API adds later still reaches the caller.
+ */
+export function withOutboundMessageAliases<T extends OutboundMessage>(message: T): T {
+  message.messageId = message.eventId;
+  message.lastError = message.lastErrorMessage ?? null;
+  message.lastAttemptAt ??= null;
+  message.nextAttemptAt ??= null;
+  message.lastResponseBody ??= null;
+  message.deliveredAt ??= null;
+  message.updatedAt ??= null;
+  return message;
+}
+
+/** Normalise a delivery attempt: mirror the API's names onto the four the SDK used to declare. */
+export function withAttemptAliases<T extends MessageAttempt>(attempt: T): T {
+  attempt.outboundMessageId = attempt.messageId;
+  attempt.error = attempt.errorMessage ?? null;
+  attempt.latencyMs = attempt.responseTimeMs ?? null;
+  attempt.attemptedAt = attempt.createdAt;
+  return attempt;
+}
+
+/** Normalise a DLQ list item; same drift as `withOutboundMessageAliases`. */
+export function withDlqMessageAliases<T extends DlqMessage>(message: T): T {
+  message.messageId = message.eventId;
+  message.lastError = message.lastErrorMessage ?? null;
+  message.lastAttemptAt ??= null;
+  message.updatedAt ??= null;
+  return message;
+}
+
+/** `GET /dlq/stats` sends `byEndpoint`; the SDK declared `topFailingEndpoints`. */
+export function withDlqStatsAliases<T extends DlqStats>(stats: T): T {
+  stats.byEndpoint ??= [];
+  stats.byEventType ??= [];
+  stats.topFailingEndpoints = stats.byEndpoint;
+  return stats;
+}
+
+/**
+ * `POST /dlq/retry-bulk` sends `{ queued, skipped, messages }`; the SDK declared
+ * `{ total, retried, failed, results }`, none of which arrived.
+ */
+export function withDlqBulkRetryAliases<T extends DlqBulkRetryResult>(result: T): T {
+  result.queued ??= 0;
+  result.skipped ??= 0;
+  result.messages ??= [];
+  result.total = result.queued + result.skipped;
+  result.retried = result.queued;
+  result.failed = result.skipped;
+  result.results = result.messages.map((m) => ({
+    messageId: m.originalMessageId,
+    status: 'queued',
+    newMessageId: m.newMessageId,
+  }));
+  return result;
+}
+
+/** `DELETE /dlq/bulk` sends `{ deleted }` only. */
+export function withDlqBulkDeleteAliases<T extends DlqBulkDeleteResult>(result: T): T {
+  result.deleted ??= 0;
+  result.total = result.deleted;
+  return result;
 }
