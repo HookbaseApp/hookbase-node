@@ -180,16 +180,18 @@ describe('Hookbase Client', () => {
         json: () => Promise.resolve({ data: [], pagination: { hasMore: false, nextCursor: null } }),
       });
 
-      await client.applications.list({ limit: 10, offset: 20 });
+      await client.applications.list({ limit: 10, cursor: 'opaque_cursor', offset: 20 });
 
       expect(mockFetch).toHaveBeenCalledWith(
         expect.stringContaining('limit=10'),
         expect.any(Object)
       );
       expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining('offset=20'),
+        expect.stringContaining('cursor=opaque_cursor'),
         expect.any(Object)
       );
+      // The outbound lists page by cursor only; an offset was never read and is no longer sent.
+      expect(mockFetch.mock.calls[0][0]).not.toContain('offset=');
     });
   });
 

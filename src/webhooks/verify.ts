@@ -180,15 +180,16 @@ export class Webhook {
   }
 
   private decodeSecret(): Buffer {
-    // Secret may be base64 encoded or raw
-    const prefix = 'whsec_';
-    let secretStr = this.secret;
-
-    if (secretStr.startsWith(prefix)) {
-      secretStr = secretStr.slice(prefix.length);
+    // The same decoding the API signs with (api/src/utils/outbound-signature.ts decodeSecret):
+    // strip `whsec_`, plus the `op_` infix operational-webhook secrets carry
+    // (`whsec_op_<base64>`); a 64-character hex remainder is a legacy secret and is the hex
+    // bytes; anything else is base64. Decoding `op_...` or a hex secret as base64 produced the
+    // wrong key, so every signature from those secrets failed to verify.
+    const raw = this.secret.replace(/^whsec_(op_)?/, '');
+    if (/^[0-9a-fA-F]{64}$/.test(raw)) {
+      return Buffer.from(raw, 'hex');
     }
-
-    return Buffer.from(secretStr, 'base64');
+    return Buffer.from(raw, 'base64');
   }
 }
 

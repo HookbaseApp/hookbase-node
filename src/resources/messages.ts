@@ -1,15 +1,18 @@
+import { randomUUID } from 'node:crypto';
 import { BaseResource, type ApiClient } from './base';
+import { withAttemptAliases, withOutboundMessageAliases } from './wire';
 import type {
-  Message,
   OutboundMessage,
   MessageAttempt,
+  MessageReplayResult,
   SendMessageInput,
   SendMessageResponse,
   ListMessagesParams,
   ListOutboundMessagesParams,
   OutboundStatsSummary,
   ExportOutboundParams,
-  PaginatedResponse,
+  OutboundExport,
+  CursorPaginatedResponse,
   ApiResponse,
   RequestOptions,
 } from '../types';
@@ -23,13 +26,31 @@ export class MessagesResource extends BaseResource {
   }
 
   /**
-   * Send a webhook event to subscribed endpoints
+   * Send a webhook event to subscribed endpoints (or to `endpointIds` only).
+   *
+   * Every call carries an idempotency key — `data.idempotencyKey`, else
+   * `options.idempotencyKey`, else one generated for this call — in the body and the
+   * `Idempotency-Key` header, so the client's own retries after a timeout or 5xx return the first
+   * send's result instead of sending the event again.
    */
   async send(
     applicationId: string,
     data: SendMessageInput,
     options?: RequestOptions
   ): Promise<SendMessageResponse> {
+    const { eventId: _ignored, endpointIds, endpointId, ...rest } = data;
+    void _ignored;
+    const idempotencyKey = data.idempotencyKey ?? options?.idempotencyKey ?? randomUUID();
+
+    const body: Record<string, unknown> = { ...rest, applicationId, idempotencyKey };
+    const targets = [...new Set([...(endpointIds ?? []), ...(endpointId ? [endpointId] : [])])];
+    if (targets.length > 0) {
+      body.endpointIds = targets;
+      // The API before endpointIds support reads only the singular field; with exactly one
+      // target, send it there too so the event is not fanned out to every subscriber.
+      if (targets.length === 1) body.endpointId = targets[0];
+    }
+
     const response = await this.client.request<ApiResponse<{
       eventId: string;
       messagesQueued: number;
@@ -38,15 +59,18 @@ export class MessagesResource extends BaseResource {
       'POST',
       '/api/send-event',
       {
-        body: { ...data, applicationId },
-        requestOptions: options,
+        body,
+        requestOptions: { ...options, idempotencyKey },
       }
     );
-    // Map API response to SDK types
     const apiData = response.data;
+    const endpoints = apiData.endpoints ?? [];
     return {
+      eventId: apiData.eventId,
+      messagesQueued: apiData.messagesQueued ?? endpoints.length,
+      endpoints,
       messageId: apiData.eventId,
-      outboundMessages: apiData.endpoints.map((ep) => ({
+      outboundMessages: endpoints.map((ep) => ({
         id: ep.id,
         endpointId: ep.id,
         status: 'pending' as const,
@@ -55,27 +79,20 @@ export class MessagesResource extends BaseResource {
   }
 
   /**
-   * List outbound messages for an application
+   * List outbound messages for an application, one page at a time. Pass the returned `cursor`
+   * back in as `{ cursor }` for the next page.
    */
   async list(
     applicationId: string,
-    params: Omit<ListMessagesParams, 'applicationId'> = {},
+    params: Omit<ListMessagesParams, 'applicationId'> | ListOutboundMessagesParams = {},
     options?: RequestOptions
-  ): Promise<PaginatedResponse<OutboundMessage>> {
-    const response = await this.client.request<{
-      data: OutboundMessage[];
-      pagination: { hasMore: boolean; nextCursor: string | null };
-    }>('GET', '/api/outbound-messages', {
-      query: { ...this.buildQuery(params), applicationId },
-      requestOptions: options,
-    });
-    return {
-      data: response.data,
-      total: response.data.length,
-      limit: params.limit ?? 50,
-      offset: 0,
-      hasMore: response.pagination?.hasMore ?? false,
-    };
+  ): Promise<CursorPaginatedResponse<OutboundMessage>> {
+    return this.listPage<OutboundMessage>(
+      '/api/outbound-messages',
+      { ...this.buildQuery(params), applicationId },
+      options,
+      withOutboundMessageAliases
+    );
   }
 
   /**
@@ -86,25 +103,12 @@ export class MessagesResource extends BaseResource {
     params: Omit<ListMessagesParams, 'applicationId' | 'offset'> = {},
     options?: RequestOptions
   ): AsyncGenerator<OutboundMessage> {
-    let cursor: string | undefined;
-    let hasMore = true;
-
-    while (hasMore) {
-      const response = await this.client.request<{
-        data: OutboundMessage[];
-        pagination: { hasMore: boolean; nextCursor: string | null };
-      }>('GET', '/api/outbound-messages', {
-        query: { ...this.buildQuery(params), applicationId, limit: params.limit ?? 100, cursor },
-        requestOptions: options,
-      });
-
-      for (const item of response.data) {
-        yield item;
-      }
-
-      hasMore = response.pagination?.hasMore ?? false;
-      cursor = response.pagination?.nextCursor ?? undefined;
-    }
+    yield* this.iterate<OutboundMessage>(
+      '/api/outbound-messages',
+      { ...this.buildQuery(params), applicationId, limit: params.limit ?? 100 },
+      options,
+      withOutboundMessageAliases
+    );
   }
 
   /**
@@ -117,22 +121,24 @@ export class MessagesResource extends BaseResource {
   ): Promise<OutboundMessage> {
     const response = await this.client.request<ApiResponse<OutboundMessage>>(
       'GET',
-      `/api/outbound-messages/${messageId}`,
+      `/api/outbound-messages/${encodeURIComponent(messageId)}`,
       { requestOptions: options }
     );
-    return response.data;
+    return withOutboundMessageAliases(response.data);
   }
 
   /**
-   * List outbound messages for a specific event/message
+   * List outbound messages for an application.
+   *
+   * The message list has no event filter, so `messageId` does not narrow the result: this is
+   * `list(applicationId, params)`.
    */
   async listOutbound(
     applicationId: string,
     messageId: string,
     params: Omit<ListOutboundMessagesParams, 'messageId'> = {},
     options?: RequestOptions
-  ): Promise<PaginatedResponse<OutboundMessage>> {
-    // The API doesn't have a nested route for this - filter by event ID
+  ): Promise<CursorPaginatedResponse<OutboundMessage>> {
     return this.list(applicationId, params, options);
   }
 
@@ -154,7 +160,7 @@ export class MessagesResource extends BaseResource {
     applicationId: string,
     params: ListOutboundMessagesParams = {},
     options?: RequestOptions
-  ): Promise<PaginatedResponse<OutboundMessage>> {
+  ): Promise<CursorPaginatedResponse<OutboundMessage>> {
     return this.list(applicationId, params, options);
   }
 
@@ -168,35 +174,38 @@ export class MessagesResource extends BaseResource {
   ): Promise<MessageAttempt[]> {
     const response = await this.client.request<ApiResponse<MessageAttempt[]>>(
       'GET',
-      `/api/outbound-messages/${outboundMessageId}/attempts`,
+      `/api/outbound-messages/${encodeURIComponent(outboundMessageId)}/attempts`,
       { requestOptions: options }
     );
-    return response.data;
+    return (response.data ?? []).map(withAttemptAliases);
   }
 
   /**
-   * Replay a failed outbound message
+   * Replay an exhausted, DLQ or stalled failed outbound message. The replay is a NEW outbound
+   * message: its id is `newMessageId` (also returned as `id`).
+   *
+   * Not retried automatically on a timeout or 5xx unless you pass `idempotencyKey` or `retries`,
+   * since a replay that did go through would otherwise be delivered twice.
    */
   async retry(
     applicationId: string,
     outboundMessageId: string,
     options?: RequestOptions
-  ): Promise<OutboundMessage> {
-    const response = await this.client.request<ApiResponse<{
-      originalMessageId: string;
-      newMessageId: string;
-      status: string;
-    }>>(
+  ): Promise<OutboundMessage & MessageReplayResult> {
+    const response = await this.client.request<ApiResponse<MessageReplayResult>>(
       'POST',
-      `/api/outbound-messages/${outboundMessageId}/replay`,
+      `/api/outbound-messages/${encodeURIComponent(outboundMessageId)}/replay`,
       { requestOptions: options }
     );
-    // Return a minimal outbound message shape
+    // A minimal outbound-message shape, kept for callers that read `id`/`status`, plus the
+    // replay result the API actually returns.
     return {
       id: response.data.newMessageId,
       messageId: response.data.originalMessageId,
+      originalMessageId: response.data.originalMessageId,
+      newMessageId: response.data.newMessageId,
       status: 'pending',
-    } as OutboundMessage;
+    } as OutboundMessage & MessageReplayResult;
   }
 
   /**
@@ -206,17 +215,14 @@ export class MessagesResource extends BaseResource {
     applicationId: string,
     messageId: string,
     options?: RequestOptions
-  ): Promise<SendMessageResponse> {
-    const response = await this.client.request<ApiResponse<{
-      originalMessageId: string;
-      newMessageId: string;
-      status: string;
-    }>>(
+  ): Promise<Pick<SendMessageResponse, 'messageId' | 'outboundMessages'> & MessageReplayResult> {
+    const response = await this.client.request<ApiResponse<MessageReplayResult>>(
       'POST',
-      `/api/outbound-messages/${messageId}/replay`,
+      `/api/outbound-messages/${encodeURIComponent(messageId)}/replay`,
       { requestOptions: options }
     );
     return {
+      ...response.data,
       messageId: response.data.newMessageId,
       outboundMessages: [],
     };
@@ -235,13 +241,26 @@ export class MessagesResource extends BaseResource {
   }
 
   /**
-   * Export outbound events/messages as JSON or CSV
+   * Export outbound events (default) or messages. Resolves to the parsed JSON export, or to the
+   * CSV text when `format: 'csv'`.
    */
+  async export(
+    params: ExportOutboundParams & { format: 'csv' },
+    options?: RequestOptions
+  ): Promise<string>;
+  async export(
+    params?: ExportOutboundParams & { format?: 'json' },
+    options?: RequestOptions
+  ): Promise<OutboundExport>;
+  async export(
+    params?: ExportOutboundParams,
+    options?: RequestOptions
+  ): Promise<OutboundExport | string>;
   async export(
     params: ExportOutboundParams = {},
     options?: RequestOptions
-  ): Promise<unknown> {
-    return this.client.request('GET', '/api/outbound-messages/export', {
+  ): Promise<OutboundExport | string> {
+    return this.client.request<OutboundExport | string>('GET', '/api/outbound-messages/export', {
       query: this.buildQuery(params),
       requestOptions: options,
     });

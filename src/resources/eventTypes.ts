@@ -4,7 +4,7 @@ import type {
   CreateEventTypeInput,
   UpdateEventTypeInput,
   ListEventTypesParams,
-  PaginatedResponse,
+  CursorPaginatedResponse,
   ApiResponse,
   RequestOptions,
 } from '../types';
@@ -18,26 +18,14 @@ export class EventTypesResource extends BaseResource {
   }
 
   /**
-   * List all event types
+   * List event types, one page at a time. Pass the returned `cursor` back in as `{ cursor }` for
+   * the next page.
    */
   async list(
     params: ListEventTypesParams = {},
     options?: RequestOptions
-  ): Promise<PaginatedResponse<EventType>> {
-    const response = await this.client.request<{
-      data: EventType[];
-      pagination: { hasMore: boolean; nextCursor: string | null };
-    }>('GET', '/api/event-types', {
-      query: this.buildQuery(params),
-      requestOptions: options,
-    });
-    return {
-      data: response.data,
-      total: response.data.length,
-      limit: params.limit ?? 50,
-      offset: params.offset ?? 0,
-      hasMore: response.pagination?.hasMore ?? false,
-    };
+  ): Promise<CursorPaginatedResponse<EventType>> {
+    return this.listPage<EventType>('/api/event-types', this.buildQuery(params), options);
   }
 
   /**
@@ -47,26 +35,11 @@ export class EventTypesResource extends BaseResource {
     params: Omit<ListEventTypesParams, 'offset'> = {},
     options?: RequestOptions
   ): AsyncGenerator<EventType> {
-    const limit = params.limit ?? 100;
-    let cursor: string | undefined;
-    let hasMore = true;
-
-    while (hasMore) {
-      const response = await this.client.request<{
-        data: EventType[];
-        pagination: { hasMore: boolean; nextCursor: string | null };
-      }>('GET', '/api/event-types', {
-        query: { ...this.buildQuery(params), limit, cursor },
-        requestOptions: options,
-      });
-
-      for (const item of response.data) {
-        yield item;
-      }
-
-      hasMore = response.pagination?.hasMore ?? false;
-      cursor = response.pagination?.nextCursor ?? undefined;
-    }
+    yield* this.iterate<EventType>(
+      '/api/event-types',
+      { ...this.buildQuery(params), limit: params.limit ?? 100 },
+      options
+    );
   }
 
   /**
@@ -82,21 +55,17 @@ export class EventTypesResource extends BaseResource {
   }
 
   /**
-   * Get an event type by name (searches and returns first match)
+   * Get an event type by its exact name.
+   *
+   * `search` is a substring match, so `order` also matches `order.created`, `order.updated` and
+   * so on; the exact name can be on any page of those results, not just the first.
    */
   async getByName(name: string, options?: RequestOptions): Promise<EventType> {
-    const response = await this.client.request<{
-      data: EventType[];
-    }>('GET', '/api/event-types', {
-      query: { search: name, limit: 100 },
-      requestOptions: options,
-    });
-    const match = response.data.find((et) => et.name === name);
-    if (!match) {
-      const { HookbaseNotFoundError } = await import('../errors');
-      throw new HookbaseNotFoundError(`Event type '${name}' not found`);
+    for await (const et of this.listAll({ search: name, limit: 100 }, options)) {
+      if (et.name === name) return et;
     }
-    return match;
+    const { HookbaseNotFoundError } = await import('../errors');
+    throw new HookbaseNotFoundError(`Event type '${name}' not found`);
   }
 
   /**

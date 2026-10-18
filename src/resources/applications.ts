@@ -5,7 +5,7 @@ import type {
   CreateApplicationInput,
   UpdateApplicationInput,
   ListApplicationsParams,
-  PaginatedResponse,
+  CursorPaginatedResponse,
   ApiResponse,
   RequestOptions,
 } from '../types';
@@ -21,26 +21,19 @@ export class ApplicationsResource extends BaseResource {
   }
 
   /**
-   * List all applications
+   * List applications, one page at a time. Pass the returned `cursor` back in as `{ cursor }`
+   * for the next page.
    */
   async list(
     params: ListApplicationsParams = {},
     options?: RequestOptions
-  ): Promise<PaginatedResponse<Application>> {
-    const response = await this.client.request<{
-      data: Application[];
-      pagination: { hasMore: boolean; nextCursor: string | null };
-    }>('GET', '/api/webhook-applications', {
-      query: this.buildQuery(params),
-      requestOptions: options,
-    });
-    return {
-      data: response.data.map(withApplicationAliases),
-      total: response.data.length,
-      limit: params.limit ?? 50,
-      offset: params.offset ?? 0,
-      hasMore: response.pagination?.hasMore ?? false,
-    };
+  ): Promise<CursorPaginatedResponse<Application>> {
+    return this.listPage<Application>(
+      '/api/webhook-applications',
+      this.buildQuery(params),
+      options,
+      withApplicationAliases
+    );
   }
 
   /**
@@ -50,26 +43,12 @@ export class ApplicationsResource extends BaseResource {
     params: Omit<ListApplicationsParams, 'offset'> = {},
     options?: RequestOptions
   ): AsyncGenerator<Application> {
-    const limit = params.limit ?? 100;
-    let cursor: string | undefined;
-    let hasMore = true;
-
-    while (hasMore) {
-      const response = await this.client.request<{
-        data: Application[];
-        pagination: { hasMore: boolean; nextCursor: string | null };
-      }>('GET', '/api/webhook-applications', {
-        query: { ...this.buildQuery(params), limit, cursor },
-        requestOptions: options,
-      });
-
-      for (const item of response.data) {
-        yield withApplicationAliases(item);
-      }
-
-      hasMore = response.pagination?.hasMore ?? false;
-      cursor = response.pagination?.nextCursor ?? undefined;
-    }
+    yield* this.iterate<Application>(
+      '/api/webhook-applications',
+      { ...this.buildQuery(params), limit: params.limit ?? 100 },
+      options,
+      withApplicationAliases
+    );
   }
 
   /**

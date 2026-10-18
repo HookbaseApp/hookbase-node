@@ -69,6 +69,7 @@ export type {
   UpdateEndpointInput,
   ListEndpointsParams,
   EndpointStats,
+  RotateEndpointSecretResult,
 
   // Event Types (outbound)
   EventType,
@@ -89,6 +90,7 @@ export type {
   MessageAttempt,
   SendMessageInput,
   SendMessageResponse,
+  MessageReplayResult,
   ListMessagesParams,
   ListOutboundMessagesParams,
 
@@ -183,6 +185,7 @@ export type {
   // DLQ (outbound)
   DlqMessage,
   DlqStats,
+  DlqEndpointCount,
   ListDlqParams,
   DlqRetryResult,
   DlqBulkRetryResult,
@@ -191,6 +194,9 @@ export type {
   // Outbound Stats
   OutboundStatsSummary,
   ExportOutboundParams,
+  OutboundExport,
+  OutboundEventExportRow,
+  OutboundMessageExportRow,
 
   // Import/Export
   ConflictStrategy,

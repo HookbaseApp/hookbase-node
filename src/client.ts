@@ -172,6 +172,16 @@ export class Hookbase implements ApiClient {
     }
   ): Promise<T> {
     const timeout = options?.requestOptions?.timeout ?? this.timeout;
+    const idempotencyKey = options?.requestOptions?.idempotencyKey;
+    // A POST that failed on a 5xx, a timeout or a dropped connection may still have been carried
+    // out, so repeating it can create the thing twice (a second rotation, a second replay, a
+    // second send). Only an idempotency key makes that safe, so without one a POST is not
+    // retried on those failures — unless the caller asked for retries on this request
+    // explicitly. A 429 is still retried: the API refused it, so nothing ran.
+    const retryAmbiguousFailures =
+      method.toUpperCase() !== 'POST' ||
+      !!idempotencyKey ||
+      options?.requestOptions?.retries !== undefined;
     const retries = options?.requestOptions?.retries ?? this.retries;
 
     // Build URL with query parameters
@@ -200,8 +210,8 @@ export class Hookbase implements ApiClient {
       headers['Content-Type'] = 'application/json';
     }
 
-    if (options?.requestOptions?.idempotencyKey) {
-      headers['Idempotency-Key'] = options.requestOptions.idempotencyKey;
+    if (idempotencyKey) {
+      headers['Idempotency-Key'] = idempotencyKey;
     }
 
     // Debug logging
@@ -249,6 +259,16 @@ export class Hookbase implements ApiClient {
             await sleep(waitTime);
             continue;
           }
+          throw error;
+        }
+
+        // Any other 4xx is the API answering, not failing: sending the same request again gets
+        // the same answer. Only 5xx, timeouts and network errors are worth another attempt.
+        if (error instanceof HookbaseApiError && error.status < 500) {
+          throw error;
+        }
+
+        if (!retryAmbiguousFailures) {
           throw error;
         }
 
@@ -305,6 +325,12 @@ export class Hookbase implements ApiClient {
       if (response.ok) {
         if (response.status === 204) {
           return undefined;
+        }
+        // CSV exports come back as text/csv; parsing those as JSON threw, and the SyntaxError
+        // was then reported (and retried) as a network error.
+        const contentType = response.headers.get('content-type');
+        if (contentType && !/[/+]json\b/i.test(contentType)) {
+          return response.text();
         }
         return response.json();
       }
