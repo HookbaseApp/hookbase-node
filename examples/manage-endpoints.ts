@@ -185,18 +185,18 @@ async function createEventTypes() {
 // ============================================
 
 async function listAllEndpoints(appId: string) {
-  // Option 1: Manual pagination
-  let offset = 0;
+  // Option 1: Manual pagination, passing each page's cursor back in
+  let cursor: string | undefined;
   const limit = 50;
   let hasMore = true;
 
   while (hasMore) {
-    const response = await hookbase.endpoints.list(appId, { limit, offset });
+    const response = await hookbase.endpoints.list(appId, { limit, cursor });
     for (const endpoint of response.data) {
       console.log(`Endpoint: ${endpoint.url}`);
     }
     hasMore = response.hasMore;
-    offset += limit;
+    cursor = response.cursor ?? undefined;
   }
 
   // Option 2: Async iterator (recommended)
@@ -230,7 +230,7 @@ async function safeGetEndpoint(appId: string, endpointId: string) {
 async function generatePortalAccess(appId: string) {
   // Create a short-lived token for the embedded portal
   const token = await hookbase.portalTokens.create(appId, {
-    expiresIn: 3600, // 1 hour
+    expiresInDays: 1,
   });
 
   console.log('Portal token:', token.token);

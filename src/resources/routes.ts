@@ -1,10 +1,12 @@
 import { BaseResource, type ApiClient } from './base';
+import { importBody, withCircuitStatusAliases } from './wire';
 import type {
   Route,
   CreateRouteInput,
   UpdateRouteInput,
   ListRoutesParams,
   CircuitStatusInfo,
+  CircuitResetResult,
   CircuitBreakerConfig,
   PaginatedResponse,
   RequestOptions,
@@ -163,7 +165,7 @@ export class RoutesResource extends BaseResource {
     options?: RequestOptions
   ): Promise<ImportResult> {
     return this.client.request<ImportResult>('POST', '/api/routes/import', {
-      body: data,
+      body: importBody(data),
       requestOptions: options,
     });
   }
@@ -175,11 +177,12 @@ export class RoutesResource extends BaseResource {
     routeId: string,
     options?: RequestOptions
   ): Promise<CircuitStatusInfo> {
-    return this.client.request<CircuitStatusInfo>(
+    const status = await this.client.request<CircuitStatusInfo>(
       'GET',
       `/api/routes/${encodeURIComponent(routeId)}/circuit-status`,
       { requestOptions: options }
     );
+    return withCircuitStatusAliases(status);
   }
 
   /**
@@ -188,7 +191,7 @@ export class RoutesResource extends BaseResource {
   async resetCircuit(
     routeId: string,
     options?: RequestOptions
-  ): Promise<{ success: boolean; circuitState: string; previousState: string }> {
+  ): Promise<CircuitResetResult> {
     return this.client.request(
       'POST',
       `/api/routes/${encodeURIComponent(routeId)}/reset-circuit`,

@@ -1,4 +1,5 @@
 import { BaseResource, type ApiClient } from './base';
+import { importBody } from './wire';
 import type {
   Source,
   SourceWithSecret,
@@ -233,7 +234,7 @@ export class SourcesResource extends BaseResource {
     options?: RequestOptions
   ): Promise<ImportResult> {
     return this.client.request<ImportResult>('POST', '/api/sources/import', {
-      body: data,
+      body: importBody(data),
       requestOptions: options,
     });
   }

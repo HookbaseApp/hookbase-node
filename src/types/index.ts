@@ -1239,6 +1239,25 @@ export interface ListDestinationsParams {
 // Route Types (Inbound)
 // ============================================
 
+/**
+ * `POST /destinations/:id/test`. A failed test (network error, missing warehouse config) is still
+ * a 200, with `success: false` and `error` set and no `status`.
+ */
+export interface DestinationTestResult {
+  success: boolean;
+  /** HTTP status the destination answered with. */
+  status?: number;
+  latencyMs?: number;
+  /** First 1000 characters of the response body. */
+  responseBody?: string;
+  error?: string;
+
+  /** @deprecated The API calls this `status`; the SDK mirrors it here. */
+  statusCode?: number;
+  /** @deprecated The API calls this `latencyMs`; the SDK mirrors it here. */
+  duration?: number;
+}
+
 export type CircuitStatus = 'closed' | 'open' | 'half_open';
 
 export interface CircuitBreakerConfig {
@@ -1327,20 +1346,47 @@ export interface ListRoutesParams {
   isActive?: boolean;
 }
 
+/** `GET /routes/:id/circuit-status`. The thresholds are the route's, or the API's defaults. */
 export interface CircuitStatusInfo {
   circuitState: CircuitStatus;
   circuitOpenedAt: string | null;
+  cooldownSeconds: number;
+  /** Half-open probes sent so far. */
+  probeAttempts: number;
+  probeSuccessThreshold: number;
+  failureThreshold: number;
+  consecutiveFailures: number;
+  /** Seconds until an open circuit lets a probe through; null unless the circuit is open. */
+  timeUntilProbeSeconds: number | null;
+
+  /** @deprecated The API calls this `cooldownSeconds`; the SDK mirrors it here. */
   circuitCooldownSeconds: number;
+  /** @deprecated The API calls this `failureThreshold`; the SDK mirrors it here. */
   circuitFailureThreshold: number;
+  /** @deprecated The API calls this `probeSuccessThreshold`; the SDK mirrors it here. */
   circuitProbeSuccessThreshold: number;
+  /** @deprecated The API calls this `consecutiveFailures`; the SDK mirrors it here. */
   recentFailures: number;
+}
+
+/** `POST /routes/:id/reset-circuit`. */
+export interface CircuitResetResult {
+  success: boolean;
+  circuitState: CircuitStatus;
+  previousState: CircuitStatus | null;
 }
 
 // ============================================
 // Inbound Event Types
 // ============================================
 
-export type InboundEventStatus = 'delivered' | 'failed' | 'pending' | 'partial';
+export type InboundEventStatus =
+  | 'delivered'
+  | 'failed'
+  | 'pending'
+  | 'partial'
+  | 'duplicate'
+  | 'no_routes';
 
 export interface DeliveryStats {
   total: number;
@@ -1355,36 +1401,50 @@ export interface InboundEvent {
   organizationId: string;
   eventType: string | null;
   payloadHash: string | null;
-  signatureValid: number | null;
+  payloadKey: string;
+  /** The request headers as stored: a JSON object serialised to a string. */
+  headers: string | null;
+  signatureValid: boolean | null;
   receivedAt: string;
   ipAddress: string | null;
   sourceName: string;
   sourceSlug: string;
   status: InboundEventStatus;
+  /** The HTTP verb the webhook arrived with. */
+  method: string;
   deliveryStats: DeliveryStats | null;
 }
 
+/**
+ * `GET /events/:id`. The API sends the event, its payload and its deliveries as three siblings;
+ * the SDK flattens them into one object.
+ */
 export interface EventDetail {
   id: string;
+  organizationId: string;
   sourceId: string;
   eventType: string | null;
-  payload: unknown;
-  headers: Record<string, string>;
-  signatureValid: number | null;
+  payloadHash: string | null;
+  payloadKey: string;
+  /** The request headers as stored: a JSON object serialised to a string. */
+  headers: string | null;
+  signatureValid: boolean | null;
   receivedAt: string;
   ipAddress: string | null;
   sourceName: string;
-  deliveries: Array<{
-    id: string;
-    destinationId: string;
-    destinationName: string;
-    destinationUrl: string;
-    status: string;
-    statusCode: number | null;
-    attempts: number;
-    createdAt: string;
-    completedAt: string | null;
-  }>;
+  encryptFields: unknown;
+  maskFields: unknown;
+  status: InboundEventStatus;
+  /** The HTTP verb the webhook arrived with. */
+  method: string;
+  /**
+   * The payload, decrypted and with the source's mask fields applied. Null when it was never
+   * stored (a transient source) or retention has removed it.
+   */
+  payload: unknown;
+  /** True when the source does not store payloads. */
+  transient: boolean;
+  deliveries: Delivery[];
 }
 
 export interface EventDebugInfo {
@@ -1403,7 +1463,21 @@ export interface EventDebugInfo {
 
 export interface ListEventsParams {
   limit?: number;
+  /**
+   * Opaque cursor from a previous page's `cursor` (the API's `nextCursor`). Pass it back
+   * verbatim to get the next page; never build or parse one.
+   */
+  cursor?: string;
+  /**
+   * @deprecated The events list pages by cursor and has never read an offset, so every request
+   * with one returned page one again. No longer sent; pass `cursor` instead.
+   */
   offset?: number;
+  /**
+   * Ask for an exact `total`. The count is expensive on a large org, so the API skips it unless
+   * asked, and always skips it when `status` is set; without it `total` is the size of the page.
+   */
+  includeTotal?: boolean;
   /** A source id or slug. One that matches no source is a 404, not an empty list. */
   sourceId?: string;
   eventType?: string;
@@ -1430,32 +1504,69 @@ export interface ExportEventsParams {
 // Delivery Types (Inbound)
 // ============================================
 
-export type DeliveryStatus = 'pending' | 'success' | 'failed' | 'retrying';
+/**
+ * `success` and `retrying` were never values the API sends — a delivered delivery is
+ * `delivered`, and one waiting on a retry is `pending` with an `attemptCount` above zero.
+ */
+export type DeliveryStatus =
+  | 'pending'
+  | 'delivered'
+  | 'failed'
+  | 'throttled'
+  | 'circuit_open'
+  | (string & {});
 
 export interface Delivery {
   id: string;
+  organizationId: string;
   eventId: string;
   routeId: string;
   destinationId: string;
-  organizationId: string;
   status: DeliveryStatus;
-  statusCode: number | null;
-  attempts: number;
+  attemptCount: number;
   maxAttempts: number;
-  responseBody: string | null;
-  error: string | null;
-  duration: number | null;
-  createdAt: string;
-  completedAt: string | null;
   nextRetryAt: string | null;
+  /** HTTP status the destination answered with; null before the first attempt or on a network error. */
+  responseStatus: number | null;
+  /** R2 key of the stored response, when one was kept. */
+  responseKey: string | null;
+  /** The destination's response headers as stored: a JSON object serialised to a string. */
+  responseHeaders: string | null;
+  responseBody: string | null;
+  latencyMs: number | null;
+  errorMessage: string | null;
+  deliveredAt: string | null;
+  createdAt: string;
+  updatedAt: string | null;
+  destinationName: string;
+  /** Sent by `deliveries.get` and on the deliveries of `events.get`; not on `deliveries.list`. */
+  destinationUrl?: string;
+  /** Sent by `deliveries.list` only. */
+  eventType?: string | null;
+
+  /** @deprecated The API calls this `responseStatus`; the SDK mirrors it here. */
+  statusCode: number | null;
+  /** @deprecated The API calls this `attemptCount`; the SDK mirrors it here. */
+  attempts: number;
+  /** @deprecated The API calls this `errorMessage`; the SDK mirrors it here. */
+  error: string | null;
+  /** @deprecated The API calls this `latencyMs`; the SDK mirrors it here. */
+  duration: number | null;
+  /** @deprecated The API calls this `deliveredAt`; the SDK mirrors it here. */
+  completedAt: string | null;
 }
 
 export interface DeliveryDetail extends Delivery {
+  /** @deprecated The API has never sent a nested event; read `eventId`. Always undefined. */
   event?: {
     id: string;
     eventType: string | null;
     receivedAt: string;
   };
+  /**
+   * @deprecated The API sends `destinationName` and `destinationUrl` flat; the SDK mirrors them
+   * here. Read those.
+   */
   destination?: {
     name: string;
     url: string;
@@ -1537,10 +1648,21 @@ export interface TransformTestInput {
   payload: unknown;
 }
 
+/**
+ * `POST /transforms/test`. A transform that fails to run is still a 200, with `success: false`
+ * and `error` set.
+ */
 export interface TransformTestResult {
   success: boolean;
-  output?: unknown;
+  /** The transform's output: parsed when `contentType` is JSON, the raw text otherwise. */
+  result?: unknown;
+  /** Content type of the output, e.g. `application/json`. */
+  contentType?: string;
   error?: string;
+
+  /** @deprecated The API calls this `result`; the SDK mirrors it here. */
+  output?: unknown;
+  /** @deprecated The API has never sent a timing; always undefined. */
   executionTimeMs?: number;
 }
 
@@ -1822,16 +1944,79 @@ export interface ImportParams {
   validateOnly?: boolean;
 }
 
+/** One item that failed to import. */
+export interface ImportFailure {
+  name: string;
+  error: string;
+}
+
+/** Per-item verdict from the validation pass that runs before every import. */
+export interface ImportValidationResult {
+  index: number;
+  name: string;
+  /** Sources and destinations only; routes are matched by name. */
+  slug?: string;
+  status: 'valid' | 'error' | 'skip' | 'rename' | 'overwrite';
+  errors: string[];
+  warnings: string[];
+  /** The slug a `rename` will use (sources, destinations). */
+  resolvedSlug?: string;
+  /** The name a `rename` will use (routes). */
+  resolvedName?: string;
+}
+
+/**
+ * Counts. Which keys are present depends on the resource and on `validateOnly`:
+ *
+ *  - sources/destinations import: `imported`, `skipped`, `overwritten`, `failed`
+ *  - sources/destinations validate: `total`, `toCreate`, `toOverwrite`, `toSkip`, `errors`
+ *  - routes import: `total`, `imported`, `skipped`, `errors`
+ *  - routes validate: `total`, `valid`, `skipped`, `overwrite`, `errors`
+ */
+export interface ImportSummary {
+  total?: number;
+  imported?: number;
+  skipped?: number;
+  overwritten?: number;
+  failed?: number;
+  errors?: number;
+  toCreate?: number;
+  toOverwrite?: number;
+  toSkip?: number;
+  valid?: number;
+  overwrite?: number;
+}
+
+/** Sources/destinations import only: which items landed where, by name or slug. */
+export interface ImportDetails {
+  imported: string[];
+  skipped: string[];
+  overwritten: string[];
+  failed: ImportFailure[];
+}
+
+/**
+ * Result of `sources.import`, `destinations.import` and `routes.import`. The three endpoints do
+ * not answer in quite the same shape, so most fields are optional; see each one.
+ */
 export interface ImportResult {
-  success: boolean;
-  imported: number;
-  skipped: number;
-  errors: number;
-  results: Array<{
-    name: string;
-    status: string;
-    error?: string;
-  }>;
+  /** Absent on a sources/destinations `validateOnly` run, which sends `valid` instead. */
+  success?: boolean;
+  /** Sources/destinations `validateOnly`: true when no item failed validation. */
+  valid?: boolean;
+  /** Routes `validateOnly` only. */
+  validateOnly?: boolean;
+  summary: ImportSummary;
+  /** Sources/destinations import (not validate). */
+  details?: ImportDetails;
+  /** Any `validateOnly` run. */
+  validationResults?: ImportValidationResult[];
+  /** Routes import (not validate): names of the routes created or overwritten. */
+  imported?: string[];
+  /** Routes import (not validate): names of the routes skipped. */
+  skipped?: string[];
+  /** Routes import (not validate). */
+  errors?: ImportFailure[];
 }
 
 // ============================================

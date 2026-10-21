@@ -1,5 +1,10 @@
 import { BaseResource, type ApiClient } from './base';
-import { createDestinationBody, updateDestinationBody } from './wire';
+import {
+  createDestinationBody,
+  importBody,
+  updateDestinationBody,
+  withDestinationTestAliases,
+} from './wire';
 import type {
   Destination,
   CreateDestinationInput,
@@ -8,6 +13,7 @@ import type {
   PaginatedResponse,
   RequestOptions,
   ImportResult,
+  DestinationTestResult,
 } from '../types';
 
 /**
@@ -133,7 +139,7 @@ export class DestinationsResource extends BaseResource {
     options?: RequestOptions
   ): Promise<ImportResult> {
     return this.client.request<ImportResult>('POST', '/api/destinations/import', {
-      body: data,
+      body: importBody(data),
       requestOptions: options,
     });
   }
@@ -155,35 +161,15 @@ export class DestinationsResource extends BaseResource {
   /**
    * Test a destination by sending a test request
    */
-  async test(
-    id: string,
-    options?: RequestOptions
-  ): Promise<{
-    success: boolean;
-    statusCode?: number;
-    duration?: number;
-    responseBody?: string;
-    error?: string;
-  }> {
-    // The API answers with `status`/`latencyMs` (api/src/routes/destinations.ts), not
-    // `statusCode`/`duration` — this used to forward the raw response under the wrong
-    // field names, so every caller read `undefined` for both. `error` is present on
-    // a failed test (network error, missing warehouse config) and was dropped entirely.
-    const response = await this.client.request<{
-      success: boolean;
-      status?: number;
-      latencyMs?: number;
-      responseBody?: string;
-      error?: string;
-    }>('POST', `/api/destinations/${encodeURIComponent(id)}/test`, {
-      requestOptions: options,
-    });
-    return {
-      success: response.success,
-      statusCode: response.status,
-      duration: response.latencyMs,
-      responseBody: response.responseBody,
-      error: response.error,
-    };
+  async test(id: string, options?: RequestOptions): Promise<DestinationTestResult> {
+    // The API answers with `status`/`latencyMs` (api/src/routes/destinations.ts). Those are now
+    // returned under their own names; `statusCode`/`duration`, which this method used to rename
+    // them to, are mirrored for existing callers. `error` is set on a failed test.
+    const result = await this.client.request<DestinationTestResult>(
+      'POST',
+      `/api/destinations/${encodeURIComponent(id)}/test`,
+      { requestOptions: options }
+    );
+    return withDestinationTestAliases(result);
   }
 }
