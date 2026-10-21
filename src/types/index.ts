@@ -1591,7 +1591,8 @@ export interface BulkReplayResult {
   message: string;
   queued: number;
   skipped: number;
-  results: Array<{ deliveryId: string; status: string }>;
+  /** One entry per requested delivery: the replay's new delivery id, or why it was skipped. */
+  results: Array<{ originalId: string; newId: string; status: 'queued' | 'skipped'; reason?: string }>;
 }
 
 // ============================================

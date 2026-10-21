@@ -386,6 +386,9 @@ export function withDlqBulkDeleteAliases<T extends DlqBulkDeleteResult>(result: 
  * real names are now declared and the old ones mirrored from them.
  */
 export function withDeliveryAliases<T extends Delivery>(delivery: T): T {
+  // A delivery the worker has not counted yet arrives with attemptCount/maxAttempts null.
+  delivery.attemptCount ??= 0;
+  delivery.maxAttempts ??= 5;
   delivery.statusCode = delivery.responseStatus ?? null;
   delivery.attempts = delivery.attemptCount;
   delivery.error = delivery.errorMessage ?? null;

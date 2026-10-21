@@ -649,6 +649,21 @@ describe('Inbound Resources', () => {
       eventType: 'push',
     });
 
+    it('should read null attemptCount/maxAttempts as 0 and 5', async () => {
+      // A pending delivery the worker has not counted yet.
+      mockFetch.mockResolvedValueOnce(mockResponse({
+        deliveries: [{ ...deliveryRow('del_p'), status: 'pending', attemptCount: null, maxAttempts: null }],
+        limit: 50,
+        offset: 0,
+      }));
+
+      const [d] = (await client.deliveries.list()).data;
+
+      expect(d.attemptCount).toBe(0);
+      expect(d.maxAttempts).toBe(5);
+      expect(d.attempts).toBe(0);
+    });
+
     it('should list deliveries with the fields the API sends', async () => {
       mockFetch.mockResolvedValueOnce(mockResponse({
         deliveries: [deliveryRow('del_1')],
@@ -742,12 +757,17 @@ describe('Inbound Resources', () => {
         message: '3 deliveries queued for replay',
         queued: 3,
         skipped: 0,
-        results: [],
+        results: [
+          { originalId: 'del_1', newId: 'del_n1', status: 'queued' },
+          { originalId: 'del_2', newId: 'del_n2', status: 'queued' },
+          { originalId: 'del_3', newId: 'del_n3', status: 'queued' },
+        ],
       }));
 
       const result = await client.deliveries.bulkReplay(['del_1', 'del_2', 'del_3']);
 
       expect(result.queued).toBe(3);
+      expect(result.results[0]).toEqual({ originalId: 'del_1', newId: 'del_n1', status: 'queued' });
       expect(mockFetch).toHaveBeenCalledWith(
         expect.stringContaining('/api/deliveries/bulk-replay'),
         expect.objectContaining({ method: 'POST' })
