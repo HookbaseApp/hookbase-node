@@ -1,4 +1,5 @@
 import { BaseResource, type ApiClient } from './base';
+import { withDeliveryAliases, withDeliveryDetailAliases } from './wire';
 import type {
   Delivery,
   DeliveryDetail,
@@ -32,14 +33,17 @@ export class DeliveriesResource extends BaseResource {
       query: this.buildQuery(params),
       requestOptions: options,
     });
+    const deliveries = (response.deliveries ?? []).map(withDeliveryAliases);
+    // `limit` is the API's, which clamps the request to 100; comparing the page to it rather than
+    // to what was asked for keeps a full clamped page from reading as the last one.
     const limit = response.limit;
     const offset = response.offset;
     return {
-      data: response.deliveries,
-      total: response.deliveries.length,
+      data: deliveries,
+      total: deliveries.length,
       limit,
       offset,
-      hasMore: response.deliveries.length >= limit,
+      hasMore: deliveries.length > 0 && deliveries.length >= limit,
     };
   }
 
@@ -60,7 +64,9 @@ export class DeliveriesResource extends BaseResource {
         yield item;
       }
       hasMore = response.hasMore;
-      offset += limit;
+      // Advance by the rows that came back, not by the limit asked for: the API clamps `limit`
+      // to 100, so asking for 500 and stepping by 500 skipped 400 rows per page.
+      offset += response.data.length;
     }
   }
 
@@ -73,7 +79,7 @@ export class DeliveriesResource extends BaseResource {
     }>('GET', `/api/deliveries/${encodeURIComponent(deliveryId)}`, {
       requestOptions: options,
     });
-    return response.delivery;
+    return withDeliveryDetailAliases(response.delivery);
   }
 
   /**

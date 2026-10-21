@@ -1,11 +1,13 @@
 import { BaseResource, type ApiClient } from './base';
+import { withDeliveryAliases } from './wire';
 import type {
+  CursorPaginatedResponse,
+  Delivery,
   InboundEvent,
   EventDetail,
   EventDebugInfo,
   ListEventsParams,
   ExportEventsParams,
-  PaginatedResponse,
   RequestOptions,
 } from '../types';
 
@@ -18,50 +20,59 @@ export class EventsResource extends BaseResource {
   }
 
   /**
-   * List events with offset-based pagination
+   * List events, newest first, with cursor-based pagination.
+   *
+   * `total` is the API's exact count when `includeTotal` is set (and `status` is not), and the
+   * size of this page otherwise.
    */
   async list(
     params: ListEventsParams = {},
     options?: RequestOptions
-  ): Promise<PaginatedResponse<InboundEvent>> {
+  ): Promise<CursorPaginatedResponse<InboundEvent>> {
+    // The route has no offset: it pages by keyset cursor and returns `nextCursor`. Sending an
+    // offset did nothing, and `hasMore` used to be derived from a `total` the API now only sends
+    // on request, so every listAll stopped after page one.
+    const { offset: _offset, includeTotal, ...rest } = params;
+    const query = this.buildQuery(rest);
+    if (includeTotal) query.includeTotal = '1';
     const response = await this.client.request<{
       events: InboundEvent[];
-      total: number;
+      total?: number | null;
       limit: number;
-      offset: number;
+      hasMore?: boolean;
+      nextCursor?: string | null;
     }>('GET', '/api/events', {
-      query: this.buildQuery(params),
+      query,
       requestOptions: options,
     });
-    const limit = response.limit;
-    const offset = response.offset;
+    const data = response.events ?? [];
+    const cursor = response.nextCursor ?? null;
     return {
-      data: response.events,
-      total: response.total,
-      limit,
-      offset,
-      hasMore: offset + limit < response.total,
+      data,
+      total: response.total ?? data.length,
+      limit: response.limit,
+      offset: 0,
+      hasMore: (response.hasMore ?? false) && cursor !== null,
+      cursor,
     };
   }
 
   /**
-   * Async iterator to paginate through all events
+   * Async iterator to paginate through all events, following the cursor until `hasMore` is false.
+   * Starts from `params.cursor` when one is given.
    */
   async *listAll(
     params: Omit<ListEventsParams, 'offset'> = {},
     options?: RequestOptions
   ): AsyncGenerator<InboundEvent> {
-    const limit = params.limit ?? 50;
-    let offset = 0;
-    let hasMore = true;
-
-    while (hasMore) {
-      const response = await this.list({ ...params, limit, offset }, options);
-      for (const item of response.data) {
+    let cursor = params.cursor;
+    for (;;) {
+      const page = await this.list({ ...params, cursor }, options);
+      for (const item of page.data) {
         yield item;
       }
-      hasMore = response.hasMore;
-      offset += limit;
+      if (!page.hasMore || page.cursor === null) return;
+      cursor = page.cursor;
     }
   }
 
@@ -69,15 +80,21 @@ export class EventsResource extends BaseResource {
    * Get event detail including payload and deliveries
    */
   async get(eventId: string, options?: RequestOptions): Promise<EventDetail> {
+    // The API sends `{ event, payload, transient, deliveries }`. The payload is a sibling of the
+    // event, not a field on it, so spreading `event` alone left `payload` undefined every time.
     const response = await this.client.request<{
-      event: EventDetail;
-      deliveries: EventDetail['deliveries'];
+      event: Omit<EventDetail, 'payload' | 'transient' | 'deliveries'>;
+      payload?: unknown;
+      transient?: boolean;
+      deliveries?: Delivery[];
     }>('GET', `/api/events/${encodeURIComponent(eventId)}`, {
       requestOptions: options,
     });
     return {
       ...response.event,
-      deliveries: response.deliveries ?? [],
+      payload: response.payload ?? null,
+      transient: response.transient ?? false,
+      deliveries: (response.deliveries ?? []).map(withDeliveryAliases),
     };
   }
 

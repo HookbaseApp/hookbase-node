@@ -47,12 +47,22 @@ export interface CreateCronJobInput {
   url: string;
   method?: string;
   headers?: Record<string, string>;
+  /** Request body sent on each run. */
+  payload?: string;
+  /**
+   * @deprecated The API reads `payload` and has never read a `body` key, so a job created with
+   * one ran with an empty body. Still accepted and sent as `payload`; `payload` wins if both are set.
+   */
   body?: string;
   isActive?: boolean;
   description?: string;
   groupId?: string;
   timezone?: string;
   useStaticIp?: boolean;
+  timeoutMs?: number;
+  notifyOnFailure?: boolean;
+  notifyOnSuccess?: boolean;
+  notifyEmails?: string;
 }
 
 export interface UpdateCronJobInput {
@@ -61,17 +71,37 @@ export interface UpdateCronJobInput {
   url?: string;
   method?: string;
   headers?: Record<string, string>;
+  /** Request body sent on each run. */
+  payload?: string;
+  /**
+   * @deprecated The API reads `payload` and has never read a `body` key, so a job created with
+   * one ran with an empty body. Still accepted and sent as `payload`; `payload` wins if both are set.
+   */
   body?: string;
   isActive?: boolean;
   description?: string;
-  groupId?: string;
+  groupId?: string | null;
   timezone?: string;
   useStaticIp?: boolean;
+  timeoutMs?: number;
+  notifyOnFailure?: boolean;
+  notifyOnSuccess?: boolean;
+  notifyEmails?: string;
 }
 
 export interface CreateCronGroupInput {
   name: string;
   description?: string;
+}
+
+/** Carry the deprecated `body` key to `payload`, the name the API reads. */
+function cronJobBody(input: CreateCronJobInput | UpdateCronJobInput): Record<string, unknown> {
+  const { body, ...rest } = input;
+  const wire: Record<string, unknown> = { ...rest };
+  if (wire.payload === undefined && body !== undefined) {
+    wire.payload = body;
+  }
+  return wire;
 }
 
 /**
@@ -122,7 +152,7 @@ export class CronJobsResource extends BaseResource {
       cronJob?: CronJob;
       data?: CronJob;
     }>('POST', '/api/cron', {
-      body: data,
+      body: cronJobBody(data),
       requestOptions: options,
     });
     return response.cronJob ?? response.data ?? (response as unknown as CronJob);
@@ -137,7 +167,7 @@ export class CronJobsResource extends BaseResource {
     options?: RequestOptions
   ): Promise<void> {
     await this.client.request('PATCH', `/api/cron/${encodeURIComponent(id)}`, {
-      body: data,
+      body: cronJobBody(data),
       requestOptions: options,
     });
   }

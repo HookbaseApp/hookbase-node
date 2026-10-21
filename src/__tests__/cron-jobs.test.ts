@@ -86,4 +86,50 @@ describe('CronJobsResource', () => {
       expect.objectContaining({ method: 'POST' })
     );
   });
+
+  it('sends the request body as payload, the key the API reads', async () => {
+    mockFetch.mockResolvedValueOnce(mockResponse({ cronJob: { id: 'cron_1' } }, 201));
+
+    await client.cronJobs.create({
+      name: 'Nightly',
+      cronExpression: '0 0 * * *',
+      url: 'https://example.test/hook',
+      payload: '{"run":"nightly"}',
+    });
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    expect(body.payload).toBe('{"run":"nightly"}');
+    expect(body).not.toHaveProperty('body');
+  });
+
+  it('carries the deprecated body key to payload on create and update', async () => {
+    mockFetch.mockResolvedValueOnce(mockResponse({ cronJob: { id: 'cron_1' } }, 201));
+    mockFetch.mockResolvedValueOnce(mockResponse({ success: true }));
+
+    await client.cronJobs.create({
+      name: 'Nightly',
+      cronExpression: '0 0 * * *',
+      url: 'https://example.test/hook',
+      body: '{"legacy":true}',
+    });
+    await client.cronJobs.update('cron_1', { body: '{"legacy":2}' });
+
+    const created = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    const updated = JSON.parse(mockFetch.mock.calls[1][1].body as string);
+    expect(created).toEqual({
+      name: 'Nightly',
+      cronExpression: '0 0 * * *',
+      url: 'https://example.test/hook',
+      payload: '{"legacy":true}',
+    });
+    expect(updated).toEqual({ payload: '{"legacy":2}' });
+  });
+
+  it('prefers payload over body when both are set', async () => {
+    mockFetch.mockResolvedValueOnce(mockResponse({ success: true }));
+
+    await client.cronJobs.update('cron_1', { payload: 'new', body: 'old' });
+
+    expect(JSON.parse(mockFetch.mock.calls[0][1].body as string)).toEqual({ payload: 'new' });
+  });
 });

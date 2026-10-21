@@ -12,6 +12,16 @@ export interface Tunnel {
 
 export interface CreateTunnelInput {
   name: string;
+  /** The subdomain to request; one is generated when left out. 409 when it is taken. */
+  subdomain?: string;
+  /** `inbound` (default) or `bidirectional` (Pro and Business plans). */
+  direction?: 'inbound' | 'bidirectional';
+  /** Hosts a bidirectional tunnel may reach, at most 20. */
+  allowedHosts?: string[];
+  /**
+   * @deprecated The API has never read this: the local port is chosen when a client connects
+   * (the CLI forwards to whatever local port it is given), not at create. No longer sent.
+   */
   localPort?: number;
 }
 
@@ -58,7 +68,9 @@ export class TunnelsResource extends BaseResource {
       tunnel?: Tunnel;
       data?: Tunnel;
     }>('POST', '/api/tunnels', {
-      body: data,
+      // `localPort` is dropped rather than sent: the route has no schema, so the key was silently
+      // ignored today, and would become a 400 if the route ever validates strictly.
+      body: (({ localPort: _localPort, ...rest }) => rest)(data),
       requestOptions: options,
     });
     return response.tunnel ?? response.data ?? (response as unknown as Tunnel);

@@ -1,4 +1,5 @@
 import { BaseResource, type ApiClient } from './base';
+import { withTransformTestAliases } from './wire';
 import type {
   Transform,
   CreateTransformInput,
@@ -119,10 +120,11 @@ export class TransformsResource extends BaseResource {
     data: TransformTestInput,
     options?: RequestOptions
   ): Promise<TransformTestResult> {
-    return this.client.request<TransformTestResult>(
+    const result = await this.client.request<TransformTestResult>(
       'POST',
       '/api/transforms/test',
       { body: data, requestOptions: options }
     );
+    return withTransformTestAliases(result);
   }
 }

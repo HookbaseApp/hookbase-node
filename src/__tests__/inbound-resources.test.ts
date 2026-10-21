@@ -294,8 +294,8 @@ describe('Inbound Resources', () => {
     });
 
     it('should test destination', async () => {
-      // The API answers with `status`/`latencyMs`, not `statusCode`/`duration` —
-      // see api/src/routes/destinations.ts. The SDK maps onto the latter names.
+      // The API answers with `status`/`latencyMs` (api/src/routes/destinations.ts). The SDK
+      // returns those names and mirrors the `statusCode`/`duration` it used to rename them to.
       mockFetch.mockResolvedValueOnce(mockResponse({
         success: true,
         status: 200,
@@ -306,9 +306,11 @@ describe('Inbound Resources', () => {
       const result = await client.destinations.test('dst_1');
 
       expect(result.success).toBe(true);
+      expect(result.status).toBe(200);
+      expect(result.latencyMs).toBe(150);
+      expect(result.responseBody).toBe('OK');
       expect(result.statusCode).toBe(200);
       expect(result.duration).toBe(150);
-      expect(result.responseBody).toBe('OK');
     });
 
     it('should surface the error message on a failed test', async () => {
@@ -321,6 +323,7 @@ describe('Inbound Resources', () => {
 
       expect(result.success).toBe(false);
       expect(result.error).toBe('Network error');
+      expect(result.status).toBeUndefined();
       expect(result.statusCode).toBeUndefined();
     });
   });
@@ -389,19 +392,32 @@ describe('Inbound Resources', () => {
     });
 
     it('should get circuit status', async () => {
+      // The shape GET /routes/:id/circuit-status sends (api/src/routes/routes.ts).
       mockFetch.mockResolvedValueOnce(mockResponse({
         circuitState: 'open',
         circuitOpenedAt: '2024-01-01T00:00:00Z',
-        circuitCooldownSeconds: 60,
-        circuitFailureThreshold: 5,
-        circuitProbeSuccessThreshold: 2,
-        recentFailures: 5,
+        cooldownSeconds: 60,
+        probeAttempts: 1,
+        probeSuccessThreshold: 2,
+        failureThreshold: 5,
+        consecutiveFailures: 7,
+        timeUntilProbeSeconds: 42,
       }));
 
       const result = await client.routes.getCircuitStatus('rt_1');
 
       expect(result.circuitState).toBe('open');
-      expect(result.recentFailures).toBe(5);
+      expect(result.cooldownSeconds).toBe(60);
+      expect(result.probeAttempts).toBe(1);
+      expect(result.probeSuccessThreshold).toBe(2);
+      expect(result.failureThreshold).toBe(5);
+      expect(result.consecutiveFailures).toBe(7);
+      expect(result.timeUntilProbeSeconds).toBe(42);
+      // The names the SDK used to declare, mirrored from the real ones.
+      expect(result.circuitCooldownSeconds).toBe(60);
+      expect(result.circuitFailureThreshold).toBe(5);
+      expect(result.circuitProbeSuccessThreshold).toBe(2);
+      expect(result.recentFailures).toBe(7);
     });
 
     it('should reset circuit', async () => {
@@ -436,34 +452,131 @@ describe('Inbound Resources', () => {
   // Events (inbound)
   // =============================================
   describe('EventsResource', () => {
-    it('should list events with offset-based pagination', async () => {
-      mockFetch.mockResolvedValueOnce(mockResponse({
-        events: [
-          { id: 'evt_1', eventType: 'push', status: 'delivered' },
-          { id: 'evt_2', eventType: 'push', status: 'pending' },
-        ],
-        total: 100,
-        limit: 50,
-        offset: 0,
-      }));
-
-      const result = await client.events.list({ limit: 50 });
-
-      expect(result.data).toHaveLength(2);
-      expect(result.total).toBe(100);
-      expect(result.hasMore).toBe(true);
+    // A list item as GET /events sends it (api/src/routes/events.ts).
+    const eventRow = (id: string) => ({
+      id,
+      organizationId: 'org_1',
+      sourceId: 'src_1',
+      eventType: 'push',
+      payloadHash: 'abc',
+      payloadKey: `payloads/${id}.json`,
+      headers: '{"content-type":"application/json",":method":"POST"}',
+      ipAddress: '203.0.113.7',
+      signatureValid: true,
+      receivedAt: '2026-10-20T12:00:00.000Z',
+      sourceName: 'GitHub',
+      sourceSlug: 'github',
+      status: 'delivered',
+      method: 'POST',
+      deliveryStats: { total: 1, delivered: 1, failed: 0, pending: 0 },
     });
 
-    it('should get event detail', async () => {
+    it('should list events with cursor-based pagination', async () => {
       mockFetch.mockResolvedValueOnce(mockResponse({
-        event: { id: 'evt_1', eventType: 'push', payload: { ref: 'main' } },
-        deliveries: [{ id: 'del_1', status: 'success', destinationName: 'Slack' }],
+        events: [eventRow('evt_1'), eventRow('evt_2')],
+        total: null,
+        limit: 2,
+        hasMore: true,
+        nextCursor: 'Y3Vyc29yLTE=',
+      }));
+
+      const result = await client.events.list({ limit: 2 });
+
+      expect(result.data).toHaveLength(2);
+      expect(result.data[0].signatureValid).toBe(true);
+      expect(result.hasMore).toBe(true);
+      expect(result.cursor).toBe('Y3Vyc29yLTE=');
+      // No count was asked for, so total is the page size rather than null.
+      expect(result.total).toBe(2);
+    });
+
+    it('should send includeTotal as 1 and return the exact total', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({
+        events: [eventRow('evt_1')],
+        total: 340,
+        limit: 1,
+        hasMore: true,
+        nextCursor: 'Y3Vyc29yLTE=',
+      }));
+
+      const result = await client.events.list({ limit: 1, includeTotal: true, offset: 50 });
+
+      const url = new URL(mockFetch.mock.calls[0][0] as string);
+      expect(url.searchParams.get('includeTotal')).toBe('1');
+      // The route has no offset; sending one only implied a page that never came back.
+      expect(url.searchParams.has('offset')).toBe(false);
+      expect(result.total).toBe(340);
+    });
+
+    it('should get event detail with the payload the API sends beside the event', async () => {
+      // GET /events/:id sends `{ event, payload, transient, deliveries }`.
+      mockFetch.mockResolvedValueOnce(mockResponse({
+        event: {
+          id: 'evt_1',
+          organizationId: 'org_1',
+          sourceId: 'src_1',
+          eventType: 'push',
+          payloadHash: 'abc',
+          payloadKey: 'payloads/evt_1.json',
+          headers: '{"content-type":"application/json"}',
+          ipAddress: '203.0.113.7',
+          signatureValid: true,
+          receivedAt: '2026-10-20T12:00:00.000Z',
+          sourceName: 'GitHub',
+          encryptFields: null,
+          maskFields: null,
+          status: 'delivered',
+          method: 'POST',
+        },
+        payload: { ref: 'main' },
+        transient: false,
+        deliveries: [{
+          id: 'del_1',
+          organizationId: 'org_1',
+          eventId: 'evt_1',
+          routeId: 'rt_1',
+          destinationId: 'dst_1',
+          status: 'delivered',
+          attemptCount: 1,
+          maxAttempts: 5,
+          nextRetryAt: null,
+          responseStatus: 200,
+          responseKey: null,
+          responseHeaders: null,
+          responseBody: 'ok',
+          latencyMs: 87,
+          errorMessage: null,
+          deliveredAt: '2026-10-20T12:00:01.000Z',
+          createdAt: '2026-10-20T12:00:00.500Z',
+          updatedAt: '2026-10-20T12:00:01.000Z',
+          destinationName: 'Slack',
+          destinationUrl: 'https://hooks.slack.test/x',
+        }],
       }));
 
       const result = await client.events.get('evt_1');
 
       expect(result.id).toBe('evt_1');
+      expect(result.payload).toEqual({ ref: 'main' });
+      expect(result.transient).toBe(false);
       expect(result.deliveries).toHaveLength(1);
+      expect(result.deliveries[0].responseStatus).toBe(200);
+      expect(result.deliveries[0].statusCode).toBe(200);
+      expect(result.deliveries[0].attempts).toBe(1);
+    });
+
+    it('should return a null payload for a transient event', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({
+        event: { id: 'evt_t', payloadKey: 'transient:inline' },
+        payload: null,
+        transient: true,
+        deliveries: [],
+      }));
+
+      const result = await client.events.get('evt_t');
+
+      expect(result.payload).toBeNull();
+      expect(result.transient).toBe(true);
     });
 
     it('should get debug info', async () => {
@@ -477,18 +590,20 @@ describe('Inbound Resources', () => {
       expect(result.curlCommand).toBeTruthy();
     });
 
-    it('should iterate through all events', async () => {
+    it('should iterate through all events by following nextCursor', async () => {
       mockFetch.mockResolvedValueOnce(mockResponse({
-        events: [{ id: 'evt_1' }, { id: 'evt_2' }],
-        total: 3,
+        events: [eventRow('evt_1'), eventRow('evt_2')],
+        total: null,
         limit: 2,
-        offset: 0,
+        hasMore: true,
+        nextCursor: 'cursor-1',
       }));
       mockFetch.mockResolvedValueOnce(mockResponse({
-        events: [{ id: 'evt_3' }],
-        total: 3,
+        events: [eventRow('evt_3')],
+        total: null,
         limit: 2,
-        offset: 2,
+        hasMore: false,
+        nextCursor: null,
       }));
 
       const items: { id: string }[] = [];
@@ -496,8 +611,13 @@ describe('Inbound Resources', () => {
         items.push(evt);
       }
 
-      expect(items).toHaveLength(3);
+      expect(items.map((e) => e.id)).toEqual(['evt_1', 'evt_2', 'evt_3']);
       expect(mockFetch).toHaveBeenCalledTimes(2);
+      const first = new URL(mockFetch.mock.calls[0][0] as string);
+      const second = new URL(mockFetch.mock.calls[1][0] as string);
+      expect(first.searchParams.has('cursor')).toBe(false);
+      expect(second.searchParams.get('cursor')).toBe('cursor-1');
+      expect(second.searchParams.has('offset')).toBe(false);
     });
   });
 
@@ -505,9 +625,48 @@ describe('Inbound Resources', () => {
   // Deliveries
   // =============================================
   describe('DeliveriesResource', () => {
-    it('should list deliveries', async () => {
+    // A delivery as GET /deliveries sends it (api/src/routes/deliveries.ts).
+    const deliveryRow = (id: string) => ({
+      id,
+      organizationId: 'org_1',
+      eventId: 'evt_1',
+      routeId: 'rt_1',
+      destinationId: 'dst_1',
+      status: 'failed',
+      attemptCount: 3,
+      maxAttempts: 5,
+      nextRetryAt: '2026-10-20T12:05:00.000Z',
+      responseStatus: 502,
+      responseKey: null,
+      responseHeaders: '{"content-type":"text/plain"}',
+      responseBody: 'Bad Gateway',
+      latencyMs: 412,
+      errorMessage: 'HTTP 502',
+      deliveredAt: null,
+      createdAt: '2026-10-20T12:00:00.000Z',
+      updatedAt: '2026-10-20T12:01:00.000Z',
+      destinationName: 'Slack',
+      eventType: 'push',
+    });
+
+    it('should read null attemptCount/maxAttempts as 0 and 5', async () => {
+      // A pending delivery the worker has not counted yet.
       mockFetch.mockResolvedValueOnce(mockResponse({
-        deliveries: [{ id: 'del_1', status: 'success' }],
+        deliveries: [{ ...deliveryRow('del_p'), status: 'pending', attemptCount: null, maxAttempts: null }],
+        limit: 50,
+        offset: 0,
+      }));
+
+      const [d] = (await client.deliveries.list()).data;
+
+      expect(d.attemptCount).toBe(0);
+      expect(d.maxAttempts).toBe(5);
+      expect(d.attempts).toBe(0);
+    });
+
+    it('should list deliveries with the fields the API sends', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({
+        deliveries: [deliveryRow('del_1')],
         limit: 50,
         offset: 0,
       }));
@@ -515,16 +674,71 @@ describe('Inbound Resources', () => {
       const result = await client.deliveries.list();
 
       expect(result.data).toHaveLength(1);
+      const [d] = result.data;
+      expect(d.attemptCount).toBe(3);
+      expect(d.responseStatus).toBe(502);
+      expect(d.latencyMs).toBe(412);
+      expect(d.errorMessage).toBe('HTTP 502');
+      expect(d.eventType).toBe('push');
+      // The names the SDK used to declare, mirrored from the real ones.
+      expect(d.attempts).toBe(3);
+      expect(d.statusCode).toBe(502);
+      expect(d.duration).toBe(412);
+      expect(d.error).toBe('HTTP 502');
+      expect(d.completedAt).toBeNull();
+      expect(result.hasMore).toBe(false);
     });
 
     it('should get delivery by ID', async () => {
+      const { eventType: _eventType, ...row } = deliveryRow('del_1');
       mockFetch.mockResolvedValueOnce(mockResponse({
-        delivery: { id: 'del_1', status: 'success', statusCode: 200 },
+        delivery: {
+          ...row,
+          status: 'delivered',
+          responseStatus: 200,
+          deliveredAt: '2026-10-20T12:00:01.000Z',
+          destinationUrl: 'https://hooks.slack.test/x',
+        },
       }));
 
       const result = await client.deliveries.get('del_1');
 
       expect(result.id).toBe('del_1');
+      expect(result.destinationUrl).toBe('https://hooks.slack.test/x');
+      expect(result.statusCode).toBe(200);
+      expect(result.completedAt).toBe('2026-10-20T12:00:01.000Z');
+      expect(result.destination).toEqual({ name: 'Slack', url: 'https://hooks.slack.test/x' });
+    });
+
+    it('should advance listAll by the rows returned when the API clamps the limit', async () => {
+      // Asked for 250; the API clamps to 100 and says so in `limit`.
+      const page = (start: number, count: number) =>
+        Array.from({ length: count }, (_, i) => deliveryRow(`del_${start + i}`));
+      mockFetch.mockResolvedValueOnce(mockResponse({ deliveries: page(0, 100), limit: 100, offset: 0 }));
+      mockFetch.mockResolvedValueOnce(mockResponse({ deliveries: page(100, 100), limit: 100, offset: 100 }));
+      mockFetch.mockResolvedValueOnce(mockResponse({ deliveries: page(200, 30), limit: 100, offset: 200 }));
+
+      const ids: string[] = [];
+      for await (const d of client.deliveries.listAll({ limit: 250 })) {
+        ids.push(d.id);
+      }
+
+      expect(ids).toHaveLength(230);
+      expect(new Set(ids).size).toBe(230);
+      const offsets = mockFetch.mock.calls.map((c) => new URL(c[0] as string).searchParams.get('offset'));
+      expect(offsets).toEqual(['0', '100', '200']);
+    });
+
+    it('should stop listAll on an empty page', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ deliveries: [], limit: 50, offset: 0 }));
+
+      const items: unknown[] = [];
+      for await (const d of client.deliveries.listAll()) {
+        items.push(d);
+      }
+
+      expect(items).toHaveLength(0);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
     });
 
     it('should replay a delivery', async () => {
@@ -543,12 +757,17 @@ describe('Inbound Resources', () => {
         message: '3 deliveries queued for replay',
         queued: 3,
         skipped: 0,
-        results: [],
+        results: [
+          { originalId: 'del_1', newId: 'del_n1', status: 'queued' },
+          { originalId: 'del_2', newId: 'del_n2', status: 'queued' },
+          { originalId: 'del_3', newId: 'del_n3', status: 'queued' },
+        ],
       }));
 
       const result = await client.deliveries.bulkReplay(['del_1', 'del_2', 'del_3']);
 
       expect(result.queued).toBe(3);
+      expect(result.results[0]).toEqual({ originalId: 'del_1', newId: 'del_n1', status: 'queued' });
       expect(mockFetch).toHaveBeenCalledWith(
         expect.stringContaining('/api/deliveries/bulk-replay'),
         expect.objectContaining({ method: 'POST' })
@@ -610,10 +829,11 @@ describe('Inbound Resources', () => {
     });
 
     it('should test transform', async () => {
+      // POST /transforms/test sends `result` and `contentType` (api/src/routes/transforms.ts).
       mockFetch.mockResolvedValueOnce(mockResponse({
         success: true,
-        output: { transformed: true },
-        executionTimeMs: 5,
+        result: { transformed: true },
+        contentType: 'application/json',
       }));
 
       const result = await client.transforms.test({
@@ -623,7 +843,27 @@ describe('Inbound Resources', () => {
       });
 
       expect(result.success).toBe(true);
+      expect(result.result).toEqual({ transformed: true });
+      expect(result.contentType).toBe('application/json');
       expect(result.output).toEqual({ transformed: true });
+      expect(result.executionTimeMs).toBeUndefined();
+    });
+
+    it('should surface a transform that fails to run', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({
+        success: false,
+        error: 'Unexpected token',
+      }));
+
+      const result = await client.transforms.test({
+        transformType: 'jsonata',
+        code: '$.(',
+        payload: {},
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Unexpected token');
+      expect(result.result).toBeUndefined();
     });
 
     it('should delete transform', async () => {

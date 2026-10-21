@@ -2,6 +2,10 @@ import { HookbaseError } from '../errors';
 import type { CreateApiKeyInput } from './apiKeys';
 import type {
   Application,
+  CircuitStatusInfo,
+  Delivery,
+  DeliveryDetail,
+  DestinationTestResult,
   CreateDestinationInput,
   CreateEndpointInput,
   DlqBulkDeleteResult,
@@ -13,6 +17,7 @@ import type {
   Endpoint,
   MessageAttempt,
   OutboundMessage,
+  TransformTestResult,
   UpdateDestinationInput,
   UpdateEndpointInput,
 } from '../types';
@@ -371,4 +376,64 @@ export function withDlqBulkDeleteAliases<T extends DlqBulkDeleteResult>(result: 
   result.deleted ??= 0;
   result.total = result.deleted;
   return result;
+}
+
+/**
+ * Normalise an inbound delivery (list item, single get, or one of an event's deliveries).
+ *
+ * `Delivery` declared `statusCode`, `attempts`, `error`, `duration` and `completedAt`; the API has
+ * always sent `responseStatus`, `attemptCount`, `errorMessage`, `latencyMs` and `deliveredAt`. The
+ * real names are now declared and the old ones mirrored from them.
+ */
+export function withDeliveryAliases<T extends Delivery>(delivery: T): T {
+  // A delivery the worker has not counted yet arrives with attemptCount/maxAttempts null.
+  delivery.attemptCount ??= 0;
+  delivery.maxAttempts ??= 5;
+  delivery.statusCode = delivery.responseStatus ?? null;
+  delivery.attempts = delivery.attemptCount;
+  delivery.error = delivery.errorMessage ?? null;
+  delivery.duration = delivery.latencyMs ?? null;
+  delivery.completedAt = delivery.deliveredAt ?? null;
+  return delivery;
+}
+
+/** `GET /deliveries/:id` sends the destination flat; the SDK declared a nested `destination`. */
+export function withDeliveryDetailAliases<T extends DeliveryDetail>(delivery: T): T {
+  withDeliveryAliases(delivery);
+  if (delivery.destinationUrl !== undefined) {
+    delivery.destination = { name: delivery.destinationName, url: delivery.destinationUrl };
+  }
+  return delivery;
+}
+
+/** `GET /routes/:id/circuit-status`: mirror the API's names onto the four the SDK declared. */
+export function withCircuitStatusAliases<T extends CircuitStatusInfo>(status: T): T {
+  status.circuitCooldownSeconds = status.cooldownSeconds;
+  status.circuitFailureThreshold = status.failureThreshold;
+  status.circuitProbeSuccessThreshold = status.probeSuccessThreshold;
+  status.recentFailures = status.consecutiveFailures;
+  return status;
+}
+
+/** `POST /transforms/test` sends `result`; the SDK declared `output`. */
+export function withTransformTestAliases<T extends TransformTestResult>(result: T): T {
+  result.output = result.result;
+  return result;
+}
+
+/** `POST /destinations/:id/test` sends `status`/`latencyMs`; the SDK returned `statusCode`/`duration`. */
+export function withDestinationTestAliases<T extends DestinationTestResult>(result: T): T {
+  result.statusCode = result.status;
+  result.duration = result.latencyMs;
+  return result;
+}
+
+/**
+ * Body for POST /sources/import, /destinations/import and /routes/import.
+ *
+ * The API requires `conflictStrategy` and 400s without one; the SDK has always typed it optional.
+ * Leaving it out now means `skip`, the same default the Python and Java SDKs send.
+ */
+export function importBody<T extends { conflictStrategy?: string }>(data: T): T {
+  return { ...data, conflictStrategy: data.conflictStrategy ?? 'skip' };
 }

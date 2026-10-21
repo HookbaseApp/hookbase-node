@@ -129,6 +129,7 @@ export type {
   CreateDestinationInput,
   UpdateDestinationInput,
   ListDestinationsParams,
+  DestinationTestResult,
 
   // Routes (inbound)
   CircuitStatus,
@@ -138,6 +139,7 @@ export type {
   UpdateRouteInput,
   ListRoutesParams,
   CircuitStatusInfo,
+  CircuitResetResult,
 
   // Events (inbound)
   InboundEventStatus,
@@ -202,6 +204,10 @@ export type {
   ConflictStrategy,
   ImportParams,
   ImportResult,
+  ImportSummary,
+  ImportDetails,
+  ImportFailure,
+  ImportValidationResult,
 
   // Webhook Verification
   WebhookHeaders,
@@ -223,3 +229,6 @@ export type {
   UpdateCronJobInput,
   CreateCronGroupInput,
 } from './resources/cronJobs';
+
+// Tunnels — declared alongside TunnelsResource, like the cron job types above.
+export type { Tunnel, CreateTunnelInput } from './resources/tunnels';
