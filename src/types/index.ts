@@ -1231,8 +1231,11 @@ export interface ListCatalogProvidersParams {
 export interface ListSourcesParams {
   page?: number;
   pageSize?: number;
+  /** @deprecated The API does not filter on this; it is ignored and the full list comes back. */
   search?: string;
+  /** @deprecated The API does not filter on this; it is ignored and the full list comes back. */
   provider?: SourceProvider;
+  /** @deprecated The API does not filter on this; it is ignored and the full list comes back. */
   isActive?: boolean;
 }
 
@@ -1242,7 +1245,17 @@ export interface ListSourcesParams {
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 export type AuthType = 'none' | 'basic' | 'bearer' | 'api_key' | 'custom_header';
-export type DestinationType = 'http' | 's3' | 'r2' | 'gcs' | 'azure_blob';
+export type DestinationType =
+  | 'http'
+  | 's3'
+  | 'r2'
+  | 'gcs'
+  | 'azure_blob'
+  | 'sqs'
+  | 'eventbridge'
+  | 'servicebus'
+  | 'pubsub'
+  | 'oci_queue';
 
 export interface S3Config {
   bucket: string;
@@ -1360,7 +1373,8 @@ export interface CreateDestinationInput {
   /** Sent as a record — this is the shape the destinations API takes, unlike endpoint headers. */
   headers?: Record<string, string>;
   authType?: AuthType;
-  authConfig?: Record<string, unknown>;
+  /** Credentials for `authType`; every value is a string (the API rejects others). */
+  authConfig?: Record<string, string>;
   /** Request timeout in milliseconds, 1000-60000. The API defaults to 30000. */
   timeoutMs?: number;
   throttle?: {
@@ -1398,7 +1412,8 @@ export interface UpdateDestinationInput {
   /** Sent as a record — this is the shape the destinations API takes, unlike endpoint headers. */
   headers?: Record<string, string>;
   authType?: AuthType;
-  authConfig?: Record<string, unknown>;
+  /** Credentials for `authType`; every value is a string (the API rejects others). */
+  authConfig?: Record<string, string>;
   /** Request timeout in milliseconds, 1000-60000. */
   timeoutMs?: number;
   throttle?: {
@@ -1433,7 +1448,9 @@ export interface UpdateDestinationInput {
 export interface ListDestinationsParams {
   page?: number;
   pageSize?: number;
+  /** @deprecated The API does not filter on this; it is ignored and the full list comes back. */
   search?: string;
+  /** @deprecated The API does not filter on this; it is ignored and the full list comes back. */
   isActive?: boolean;
 }
 
@@ -1493,7 +1510,17 @@ export interface Route {
   failureThreshold: number | null;
   failoverDestinationIds: string[] | null;
   failoverAfterAttempts: number | null;
-  expectedResponse: string | null;
+  /** Parsed by the API, so any JSON value. */
+  expectedResponse: unknown;
+  consecutiveFailures?: number;
+  circuitProbeAttempts?: number;
+  sourceName?: string | null;
+  sourceSlug?: string | null;
+  destinationName?: string | null;
+  destinationSlug?: string | null;
+  transformName?: string | null;
+  filterName?: string | null;
+  schemaName?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -1543,8 +1570,11 @@ export interface UpdateRouteInput {
 export interface ListRoutesParams {
   page?: number;
   pageSize?: number;
+  /** @deprecated The API does not filter on this; it is ignored and the full list comes back. */
   sourceId?: string;
+  /** @deprecated The API does not filter on this; it is ignored and the full list comes back. */
   destinationId?: string;
+  /** @deprecated The API does not filter on this; it is ignored and the full list comes back. */
   isActive?: boolean;
 }
 
@@ -1649,18 +1679,43 @@ export interface EventDetail {
   deliveries: Delivery[];
 }
 
+/** `GET /events/:id/debug`: everything needed to reproduce and diagnose one inbound event. */
 export interface EventDebugInfo {
   event: {
     id: string;
     sourceId: string;
+    sourceName: string | null;
+    sourceSlug: string | null;
+    provider: string | null;
     eventType: string | null;
-    headers: Record<string, string>;
-    payload: unknown;
-    signatureValid: number | null;
-    receivedAt: string;
+    payloadHash: string | null;
     ipAddress: string | null;
+    signatureValid: boolean | null;
+    receivedAt: string;
+    /** `unsigned` when the sender attached no signature at all (as opposed to a wrong one). */
+    signatureIssue: 'unsigned' | null;
+    /** @deprecated Never sent here; read `request.headers`. */
+    headers?: Record<string, string>;
+    /** @deprecated Never sent here; read the top-level `payload`. */
+    payload?: unknown;
   };
-  curlCommand: string;
+  request: { headers: Record<string, string>; payloadSize: number; contentType: string };
+  /** The parsed payload, or null once retention removed it. */
+  payload: unknown;
+  /** True for a transient (not stored) event. */
+  transient: boolean;
+  /** The raw body, truncated to 10,000 characters. */
+  rawPayload: string;
+  deliveries: Array<Record<string, unknown>>;
+  timing: Record<string, unknown>;
+  filterEvaluations: unknown[];
+  recentConfigChanges: { sinceDays: number; entries: unknown[] };
+  debug: { curlCommand: string | null };
+  /**
+   * A curl command that replays the request against the ingest URL; null for transient events.
+   * The API nests it as `debug.curlCommand`; the SDK copies it here.
+   */
+  curlCommand: string | null;
 }
 
 export interface ListEventsParams {
@@ -1801,8 +1856,13 @@ export interface BulkReplayResult {
 // Transform Types (Inbound)
 // ============================================
 
-export type TransformType = 'jsonata' | 'javascript' | 'mapping';
-export type ContentFormat = 'json' | 'xml' | 'form' | 'text';
+/**
+ * The transform engines the API runs (api/src/transforms/validation.ts). `mapping` was never one:
+ * the API rejects it with a 400.
+ */
+export type TransformType = 'jsonata' | 'xslt' | 'liquid' | 'javascript';
+/** Payload formats a transform reads and writes. `form` was never accepted (400). */
+export type ContentFormat = 'json' | 'xml' | 'text';
 
 export interface Transform {
   id: string;
@@ -1814,7 +1874,10 @@ export interface Transform {
   code: string;
   inputFormat: ContentFormat;
   outputFormat: ContentFormat;
-  version: number;
+  isActive?: boolean;
+  /** @deprecated The API has never returned a version; always undefined. */
+  version?: number;
+  /** Absent on the create response. */
   createdAt: string;
   updatedAt: string;
 }
@@ -1832,6 +1895,7 @@ export interface CreateTransformInput {
 export interface UpdateTransformInput {
   name?: string;
   description?: string;
+  isActive?: boolean;
   transformType?: TransformType;
   code?: string;
   inputFormat?: ContentFormat;
@@ -1933,8 +1997,11 @@ export interface Schema {
   name: string;
   slug: string;
   description: string | null;
-  jsonSchema: string;
-  version: number;
+  /** The JSON Schema, parsed (the list endpoint sends it as a string; the SDK parses it). */
+  jsonSchema: Record<string, unknown> | null;
+  /** @deprecated The API has never returned a version; always undefined. */
+  version?: number;
+  /** @deprecated The API has never returned the routes using a schema; always undefined. */
   routes?: Array<{ id: string; name: string }>;
   createdAt: string;
   updatedAt: string;
@@ -1960,7 +2027,10 @@ export interface ListSchemasParams {
 
 export interface SchemaValidationResult {
   valid: boolean;
-  errors: string[];
+  /** One entry per violation; `path` is the JSON path ('' for the root). */
+  errors: Array<{ path: string; message: string }>;
+  /** The payload that was validated, echoed back. */
+  payload?: unknown;
 }
 
 // ============================================

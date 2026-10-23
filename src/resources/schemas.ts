@@ -1,4 +1,5 @@
 import { BaseResource, type ApiClient } from './base';
+import { parseJsonField } from './wire';
 import type {
   Schema,
   CreateSchemaInput,
@@ -30,9 +31,14 @@ export class SchemasResource extends BaseResource {
       query: this.buildQuery(params),
       requestOptions: options,
     });
+    // fn_schema_list returns json_schema as text; get parses it, list did not.
+    const schemas = (response.schemas ?? []).map((s) => ({
+      ...s,
+      jsonSchema: parseJsonField<Record<string, unknown> | null>(s.jsonSchema),
+    }));
     return {
-      data: response.schemas,
-      total: response.schemas.length,
+      data: schemas,
+      total: schemas.length,
       limit: params.pageSize ?? 50,
       offset: 0,
       hasMore: false,
@@ -64,7 +70,9 @@ export class SchemasResource extends BaseResource {
       body: data,
       requestOptions: options,
     });
-    return response.schema;
+    // The create response echoes the schema as snake_case `json_schema`.
+    const created = response.schema as Schema & { json_schema?: Record<string, unknown> };
+    return { ...created, jsonSchema: created.jsonSchema ?? created.json_schema ?? data.jsonSchema };
   }
 
   /**

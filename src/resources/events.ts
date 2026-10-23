@@ -102,11 +102,14 @@ export class EventsResource extends BaseResource {
    * Get debug info for an event including curl command
    */
   async debug(eventId: string, options?: RequestOptions): Promise<EventDebugInfo> {
-    return this.client.request<EventDebugInfo>(
+    const info = await this.client.request<EventDebugInfo>(
       'GET',
       `/api/events/${encodeURIComponent(eventId)}/debug`,
       { requestOptions: options }
     );
+    // The API nests the command under `debug`; it was read from the top level, so it was always
+    // undefined.
+    return { ...info, curlCommand: info.debug?.curlCommand ?? info.curlCommand ?? null };
   }
 
   /**

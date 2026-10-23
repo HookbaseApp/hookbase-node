@@ -580,14 +580,26 @@ describe('Inbound Resources', () => {
     });
 
     it('should get debug info', async () => {
+      // The shape api/src/routes/events.ts GET /:eventId/debug builds: the command is nested.
       mockFetch.mockResolvedValueOnce(mockResponse({
-        event: { id: 'evt_1', eventType: 'push' },
-        curlCommand: 'curl -X POST ...',
+        event: { id: 'evt_1', sourceId: 'src_1', eventType: 'push', signatureValid: true, signatureIssue: null },
+        request: { headers: { 'content-type': 'application/json' }, payloadSize: 2, contentType: 'application/json' },
+        payload: {},
+        transient: false,
+        rawPayload: '{}',
+        deliveries: [],
+        timing: {},
+        filterEvaluations: [],
+        recentConfigChanges: { sinceDays: 7, entries: [] },
+        debug: { curlCommand: 'curl -X POST ...' },
       }));
 
       const result = await client.events.debug('evt_1');
 
-      expect(result.curlCommand).toBeTruthy();
+      expect(mockFetch.mock.calls[0][0]).toMatch(/\/api\/events\/evt_1\/debug$/);
+      expect(result.curlCommand).toBe('curl -X POST ...');
+      expect(result.debug.curlCommand).toBe('curl -X POST ...');
+      expect(result.request.contentType).toBe('application/json');
     });
 
     it('should iterate through all events by following nextCursor', async () => {

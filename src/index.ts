@@ -242,4 +242,13 @@ export type {
 } from './resources/cronJobs';
 
 // Tunnels — declared alongside TunnelsResource, like the cron job types above.
-export type { Tunnel, CreateTunnelInput } from './resources/tunnels';
+export type { Tunnel, CreatedTunnel, CreateTunnelInput } from './resources/tunnels';
+
+// API keys and analytics — declared alongside their resources, like the types above.
+export type { ApiKey, ApiKeyWithSecret, CreateApiKeyInput } from './resources/apiKeys';
+export type {
+  DashboardData,
+  DashboardParams,
+  AnalyticsOverview,
+  AnalyticsOverviewStats,
+} from './resources/analytics';

@@ -1,4 +1,5 @@
 import { BaseResource, type ApiClient } from './base';
+import { withParsedFilter } from './wire';
 import type {
   Filter,
   CreateFilterInput,
@@ -33,7 +34,7 @@ export class FiltersResource extends BaseResource {
       requestOptions: options,
     });
     return {
-      data: response.filters,
+      data: (response.filters ?? []).map(withParsedFilter),
       total: response.pagination.total,
       limit: response.pagination.pageSize,
       offset: (response.pagination.page - 1) * response.pagination.pageSize,
@@ -70,7 +71,7 @@ export class FiltersResource extends BaseResource {
     }>('GET', `/api/filters/${encodeURIComponent(id)}`, {
       requestOptions: options,
     });
-    return response.filter;
+    return withParsedFilter(response.filter);
   }
 
   /**

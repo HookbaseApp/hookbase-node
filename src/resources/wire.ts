@@ -437,3 +437,25 @@ export function withDestinationTestAliases<T extends DestinationTestResult>(resu
 export function importBody<T extends { conflictStrategy?: string }>(data: T): T {
   return { ...data, conflictStrategy: data.conflictStrategy ?? 'skip' };
 }
+
+/**
+ * Some plpgsql list/get functions return JSON columns as `text`, and the route passes the string
+ * through unparsed (filters' `conditions`, routes' `filterConditions`, schemas' `jsonSchema` on
+ * list, API keys' `scopes`). Parse such a field when it arrived as a string; leave it otherwise.
+ */
+export function parseJsonField<T>(value: unknown): T {
+  if (typeof value !== 'string') return value as T;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return value as unknown as T;
+  }
+}
+
+export function withParsedFilter<T extends { conditions: unknown }>(filter: T): T {
+  return filter ? { ...filter, conditions: parseJsonField(filter.conditions) } : filter;
+}
+
+export function withParsedRoute<T extends { filterConditions: unknown }>(route: T): T {
+  return route ? { ...route, filterConditions: parseJsonField(route.filterConditions) } : route;
+}
