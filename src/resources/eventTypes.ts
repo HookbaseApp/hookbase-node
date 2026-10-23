@@ -48,7 +48,7 @@ export class EventTypesResource extends BaseResource {
   async get(id: string, options?: RequestOptions): Promise<EventType> {
     const response = await this.client.request<ApiResponse<EventType>>(
       'GET',
-      `/api/event-types/${id}`,
+      `/api/event-types/${encodeURIComponent(id)}`,
       { requestOptions: options }
     );
     return response.data;
@@ -80,7 +80,9 @@ export class EventTypesResource extends BaseResource {
     if (body.schema && typeof body.schema === 'object') {
       body.schema = JSON.stringify(body.schema);
     }
-    if (body.examplePayload && typeof body.examplePayload === 'object') {
+    // Any JSON value is a valid example; only a string is passed through as already encoded.
+    // `0`, `false` and plain numbers used to go out raw and were a 400.
+    if (body.examplePayload !== undefined && body.examplePayload !== null && typeof body.examplePayload !== 'string') {
       body.examplePayload = JSON.stringify(body.examplePayload);
     }
     const response = await this.client.request<ApiResponse<EventType>>(
@@ -103,12 +105,14 @@ export class EventTypesResource extends BaseResource {
     if (body.schema && typeof body.schema === 'object') {
       body.schema = JSON.stringify(body.schema);
     }
-    if (body.examplePayload && typeof body.examplePayload === 'object') {
+    // Any JSON value is a valid example; only a string is passed through as already encoded.
+    // `0`, `false` and plain numbers used to go out raw and were a 400.
+    if (body.examplePayload !== undefined && body.examplePayload !== null && typeof body.examplePayload !== 'string') {
       body.examplePayload = JSON.stringify(body.examplePayload);
     }
     const response = await this.client.request<ApiResponse<EventType>>(
       'PATCH',
-      `/api/event-types/${id}`,
+      `/api/event-types/${encodeURIComponent(id)}`,
       { body, requestOptions: options }
     );
     return response.data;
@@ -118,7 +122,7 @@ export class EventTypesResource extends BaseResource {
    * Delete an event type
    */
   async delete(id: string, options?: RequestOptions): Promise<void> {
-    await this.client.request('DELETE', `/api/event-types/${id}`, {
+    await this.client.request('DELETE', `/api/event-types/${encodeURIComponent(id)}`, {
       requestOptions: options,
     });
   }

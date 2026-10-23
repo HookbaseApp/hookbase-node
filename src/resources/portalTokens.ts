@@ -24,10 +24,10 @@ export class PortalTokensResource extends BaseResource {
   ): Promise<PortalToken> {
     const response = await this.client.request<ApiResponse<PortalToken>>(
       'POST',
-      `/api/portal/webhook-applications/${applicationId}/tokens`,
+      `/api/portal/webhook-applications/${encodeURIComponent(applicationId)}/tokens`,
       { body: data, requestOptions: options }
     );
-    return response.data;
+    return { ...response.data, applicationId: response.data.applicationId ?? applicationId };
   }
 
   /**
@@ -39,10 +39,10 @@ export class PortalTokensResource extends BaseResource {
   ): Promise<PortalToken[]> {
     const response = await this.client.request<ApiResponse<PortalToken[]>>(
       'GET',
-      `/api/portal/webhook-applications/${applicationId}/tokens`,
+      `/api/portal/webhook-applications/${encodeURIComponent(applicationId)}/tokens`,
       { requestOptions: options }
     );
-    return response.data;
+    return (response.data ?? []).map((t) => ({ ...t, applicationId: t.applicationId ?? applicationId }));
   }
 
   /**
@@ -55,7 +55,7 @@ export class PortalTokensResource extends BaseResource {
   ): Promise<void> {
     await this.client.request(
       'DELETE',
-      `/api/portal/tokens/${tokenId}`,
+      `/api/portal/tokens/${encodeURIComponent(tokenId)}`,
       { requestOptions: options }
     );
   }

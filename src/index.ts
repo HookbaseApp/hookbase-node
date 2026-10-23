@@ -70,6 +70,9 @@ export type {
   UpdateEndpointInput,
   ListEndpointsParams,
   EndpointStats,
+  RotateEndpointSecretParams,
+  TestEndpointParams,
+  EndpointTestResult,
   RotateEndpointSecretResult,
   RotateHmacEndpointSecretResult,
   RotateEd25519EndpointSecretResult,
@@ -83,6 +86,10 @@ export type {
 
   // Subscriptions (outbound)
   Subscription,
+  LabelFilterMode,
+  LabelFilters,
+  SubscriptionFilterOptions,
+  BulkSubscribeOptions,
   CreateSubscriptionInput,
   UpdateSubscriptionInput,
   ListSubscriptionsParams,

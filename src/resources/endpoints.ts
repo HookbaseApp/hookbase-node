@@ -8,6 +8,9 @@ import type {
   UpdateEndpointInput,
   ListEndpointsParams,
   RotateEndpointSecretResult,
+  RotateEndpointSecretParams,
+  TestEndpointParams,
+  EndpointTestResult,
   CursorPaginatedResponse,
   ApiResponse,
   RequestOptions,
@@ -66,7 +69,7 @@ export class EndpointsResource extends BaseResource {
   ): Promise<Endpoint> {
     const response = await this.client.request<ApiResponse<Endpoint>>(
       'GET',
-      `/api/webhook-endpoints/${endpointId}`,
+      `/api/webhook-endpoints/${encodeURIComponent(endpointId)}`,
       { requestOptions: options }
     );
     return withEndpointAliases(response.data);
@@ -99,7 +102,7 @@ export class EndpointsResource extends BaseResource {
   ): Promise<Endpoint> {
     const response = await this.client.request<ApiResponse<Endpoint>>(
       'PATCH',
-      `/api/webhook-endpoints/${endpointId}`,
+      `/api/webhook-endpoints/${encodeURIComponent(endpointId)}`,
       { body: endpointRequestBody(data), requestOptions: options }
     );
     return withEndpointAliases(response.data);
@@ -115,7 +118,7 @@ export class EndpointsResource extends BaseResource {
   ): Promise<void> {
     await this.client.request(
       'DELETE',
-      `/api/webhook-endpoints/${endpointId}`,
+      `/api/webhook-endpoints/${encodeURIComponent(endpointId)}`,
       { requestOptions: options }
     );
   }
@@ -129,6 +132,9 @@ export class EndpointsResource extends BaseResource {
    * a new key pair, of which you receive `publicKey` and the outgoing `previousPublicKey` (both
    * `whpk_...`), and no `secret`.
    *
+   * Pass `{ gracePeriodSeconds }` (0-86400; the API defaults to 3600) to choose how long the
+   * previous key keeps signing; 0 retires it immediately.
+   *
    * Not retried automatically on a timeout or 5xx unless you pass `retries`: a rotation that did
    * go through and is then repeated replaces the secret you were just handed.
    */
@@ -136,11 +142,28 @@ export class EndpointsResource extends BaseResource {
     applicationId: string,
     endpointId: string,
     options?: RequestOptions
+  ): Promise<RotateEndpointSecretResult>;
+  async rotateSecret(
+    applicationId: string,
+    endpointId: string,
+    params: RotateEndpointSecretParams,
+    options?: RequestOptions
+  ): Promise<RotateEndpointSecretResult>;
+  async rotateSecret(
+    applicationId: string,
+    endpointId: string,
+    paramsOrOptions?: RotateEndpointSecretParams | RequestOptions,
+    maybeOptions?: RequestOptions
   ): Promise<RotateEndpointSecretResult> {
+    const [params, options] = splitParams<RotateEndpointSecretParams>(
+      paramsOrOptions,
+      maybeOptions,
+      ['gracePeriodSeconds']
+    );
     return this.client.request<RotateEndpointSecretResult>(
       'POST',
-      `/api/webhook-endpoints/${endpointId}/rotate-secret`,
-      { requestOptions: options }
+      `/api/webhook-endpoints/${encodeURIComponent(endpointId)}/rotate-secret`,
+      { body: params, requestOptions: options }
     );
   }
 
@@ -199,24 +222,57 @@ export class EndpointsResource extends BaseResource {
   ): Promise<Endpoint> {
     await this.client.request(
       'POST',
-      `/api/webhook-endpoints/${endpointId}/reset-circuit`,
+      `/api/webhook-endpoints/${encodeURIComponent(endpointId)}/reset-circuit`,
       { requestOptions: options }
     );
     return this.get(applicationId, endpointId, options);
   }
 
   /**
-   * Send a test event to an endpoint
+   * Send a test event to an endpoint and report how the endpoint answered. Optionally pick the
+   * event type and payload; the API generates a test payload otherwise.
    */
   async test(
     applicationId: string,
     endpointId: string,
     options?: RequestOptions
-  ): Promise<unknown> {
-    return this.client.request(
+  ): Promise<EndpointTestResult>;
+  async test(
+    applicationId: string,
+    endpointId: string,
+    params: TestEndpointParams,
+    options?: RequestOptions
+  ): Promise<EndpointTestResult>;
+  async test(
+    applicationId: string,
+    endpointId: string,
+    paramsOrOptions?: TestEndpointParams | RequestOptions,
+    maybeOptions?: RequestOptions
+  ): Promise<EndpointTestResult> {
+    const [params, options] = splitParams<TestEndpointParams>(paramsOrOptions, maybeOptions, [
+      'eventType',
+      'payload',
+    ]);
+    return this.client.request<EndpointTestResult>(
       'POST',
-      `/api/webhook-endpoints/${endpointId}/test`,
-      { requestOptions: options }
+      `/api/webhook-endpoints/${encodeURIComponent(endpointId)}/test`,
+      { body: params, requestOptions: options }
     );
   }
+}
+
+/**
+ * Tell a params object from RequestOptions in the optional third argument (the two have no keys
+ * in common), so methods that gained params keep accepting `(appId, id, options)`.
+ */
+function splitParams<P extends object>(
+  paramsOrOptions: P | RequestOptions | undefined,
+  maybeOptions: RequestOptions | undefined,
+  paramKeys: Array<keyof P>
+): [P | undefined, RequestOptions | undefined] {
+  if (maybeOptions !== undefined) return [paramsOrOptions as P | undefined, maybeOptions];
+  if (paramsOrOptions && paramKeys.some((k) => k in paramsOrOptions)) {
+    return [paramsOrOptions as P, undefined];
+  }
+  return [undefined, paramsOrOptions as RequestOptions | undefined];
 }
