@@ -186,7 +186,15 @@ describe('outbound contract', () => {
       expect(mockFetch).toHaveBeenCalledTimes(1);
     });
 
-    it('still retries a POST when the caller asks for retries explicitly', async () => {
+    it('does not retry a POST without a key on a 5xx even when the caller passes retries', async () => {
+      const retrying = new Hookbase({ apiKey: 'k', fetch: mockFetch, retries: 0 });
+      mockFetch.mockResolvedValueOnce(errorResponse(503));
+
+      await expect(retrying.dlq.retry('a', { retries: 3 })).rejects.toMatchObject({ status: 503 });
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('retries a POST with an idempotency key and explicit retries', async () => {
       vi.useFakeTimers();
       try {
         const retrying = new Hookbase({ apiKey: 'k', fetch: mockFetch, retries: 0 });
@@ -194,7 +202,7 @@ describe('outbound contract', () => {
           .mockResolvedValueOnce(errorResponse(503))
           .mockResolvedValueOnce(jsonResponse({ data: { originalMessageId: 'a', newMessageId: 'b', status: 'queued' } }, 201));
 
-        const pending = retrying.dlq.retry('a', { retries: 1 });
+        const pending = retrying.dlq.retry('a', { retries: 1, idempotencyKey: 'k1' });
         await vi.runAllTimersAsync();
         await expect(pending).resolves.toMatchObject({ newMessageId: 'b' });
         expect(mockFetch).toHaveBeenCalledTimes(2);

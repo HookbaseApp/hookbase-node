@@ -176,12 +176,9 @@ export class Hookbase implements ApiClient {
     // A POST that failed on a 5xx, a timeout or a dropped connection may still have been carried
     // out, so repeating it can create the thing twice (a second rotation, a second replay, a
     // second send). Only an idempotency key makes that safe, so without one a POST is not
-    // retried on those failures — unless the caller asked for retries on this request
-    // explicitly. A 429 is still retried: the API refused it, so nothing ran.
-    const retryAmbiguousFailures =
-      method.toUpperCase() !== 'POST' ||
-      !!idempotencyKey ||
-      options?.requestOptions?.retries !== undefined;
+    // retried on those failures, even when the caller passes `retries`. A 429 is still
+    // retried: the API refused it, so nothing ran.
+    const retryAmbiguousFailures = method.toUpperCase() !== 'POST' || !!idempotencyKey;
     // A negative count skipped the loop entirely and threw `undefined` without sending anything.
     const retries = Math.max(0, options?.requestOptions?.retries ?? this.retries);
     const signal = options?.requestOptions?.signal;
@@ -259,7 +256,9 @@ export class Hookbase implements ApiClient {
 
         // Handle rate limiting with backoff
         if (error instanceof HookbaseRateLimitError) {
-          if (attempt < retries) {
+          // A wait longer than MAX_RETRY_AFTER_SECONDS (a quota window, or a far-off date) is
+          // thrown to the caller with retryAfter set rather than slept through.
+          if (attempt < retries && error.retryAfter <= MAX_RETRY_AFTER_SECONDS) {
             const waitTime = error.retryAfter * 1000;
             if (this.debug) {
               console.log(`[Hookbase] Rate limited, waiting ${waitTime}ms`);
@@ -445,6 +444,9 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 const DEFAULT_RETRY_AFTER_SECONDS = 60;
+
+/** The longest `Retry-After` the client waits out before retrying a 429. */
+export const MAX_RETRY_AFTER_SECONDS = 60;
 
 /**
  * Seconds to wait from a `Retry-After` header: delta-seconds or an HTTP-date (RFC 9110 10.2.3).

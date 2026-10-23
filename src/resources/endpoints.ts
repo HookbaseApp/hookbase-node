@@ -135,8 +135,8 @@ export class EndpointsResource extends BaseResource {
    * Pass `{ gracePeriodSeconds }` (0-86400; the API defaults to 3600) to choose how long the
    * previous key keeps signing; 0 retires it immediately.
    *
-   * Not retried automatically on a timeout or 5xx unless you pass `retries`: a rotation that did
-   * go through and is then repeated replaces the secret you were just handed.
+   * Not retried on a timeout or 5xx: a rotation that did go through and is then repeated
+   * replaces the secret you were just handed.
    */
   async rotateSecret(
     applicationId: string,

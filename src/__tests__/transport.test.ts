@@ -166,6 +166,27 @@ describe('transport', () => {
       expect(err.retryAfter).toBe(7);
       expect(err.message).toBe('Too many requests');
     });
+
+    it('throws at once instead of waiting out a Retry-After over 60s', async () => {
+      const client = new Hookbase({ apiKey: 'k', fetch: mockFetch, retries: 3 });
+      mockFetch.mockResolvedValueOnce(response(429, { error: 'Monthly limit' }, { 'retry-after': '3600' }));
+      const err: any = await client.request('GET', '/api/x').catch((e: any) => e);
+      expect(err).toBeInstanceOf(HookbaseRateLimitError);
+      expect(err.retryAfter).toBe(3600);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('still waits out a Retry-After of exactly 60s', async () => {
+      vi.useFakeTimers();
+      const client = new Hookbase({ apiKey: 'k', fetch: mockFetch, retries: 1 });
+      mockFetch
+        .mockResolvedValueOnce(response(429, {}, { 'retry-after': '60' }))
+        .mockResolvedValueOnce(response(200, { ok: true }));
+      const pending = client.request('GET', '/api/x');
+      await vi.advanceTimersByTimeAsync(60_000);
+      await expect(pending).resolves.toEqual({ ok: true });
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
   });
 
   describe('retry policy', () => {

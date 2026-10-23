@@ -442,9 +442,11 @@ try {
 ## Retries
 
 - **429** is retried for any method, after `Retry-After` (seconds or an HTTP date; 60s if absent).
+  A `Retry-After` over 60s is not waited out: the `HookbaseRateLimitError` is thrown at once with
+  `retryAfter` set.
 - **5xx, timeouts and network errors** are retried with exponential backoff for GET, PUT, PATCH
-  and DELETE. A POST is retried on these only with an idempotency key (or an explicit per-request
-  `retries`), since the first attempt may have run. A POST whose connection was refused is retried.
+  and DELETE. A POST is retried on these only with an idempotency key (passing `retries` alone is
+  not enough), since the first attempt may have run. A POST whose connection was refused is retried.
 - **Other 4xx** are never retried. A request cancelled with `signal` is not retried.
 
 ## API keys
@@ -485,6 +487,26 @@ import type {
   HookbaseClientOptions,
 } from '@hookbase/sdk';
 ```
+
+## Upgrading to 4.1
+
+4.1 corrects several types to what the API actually returns. The runtime values are unchanged,
+but strict TypeScript code may need small edits:
+
+- `Application.externalId` and `uid` are `string | null` (null when no external ID was set).
+- `Subscription.eventTypeName` and `updatedAt` are optional (create and update responses omit them).
+- `Route.expectedResponse` is `unknown` (the API returns parsed JSON, not a string).
+- `ApiKey.lastUsedAt`/`createdAt`, `Transform.version` and `Schema.version` are optional.
+- `TransformType` no longer includes `'mapping'`, and `ContentFormat` no longer includes `'form'`;
+  the API rejected both.
+- `schemas.list()` now returns `jsonSchema` as an object, as `schemas.get()` already did. Remove any
+  `JSON.parse(schema.jsonSchema)` on list results.
+
+Behaviour changes:
+
+- A `POST` without an `idempotencyKey` is no longer retried on a 5xx, timeout or dropped connection
+  when you pass `retries`. Pass an `idempotencyKey` to make it retry-safe.
+- A 429 whose `Retry-After` is over 60s throws `HookbaseRateLimitError` at once instead of waiting.
 
 ## Examples
 
