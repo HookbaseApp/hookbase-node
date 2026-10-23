@@ -2132,7 +2132,7 @@ export interface DlqBulkRetryResult {
 }
 
 export interface DlqBulkDeleteResult {
-  /** How many ids were submitted for deletion. */
+  /** How many of the ids were in the DLQ and were removed. Unknown ids are not counted. */
   deleted: number;
   /** @deprecated The API does not send this; the SDK mirrors `deleted` here. */
   total: number;
