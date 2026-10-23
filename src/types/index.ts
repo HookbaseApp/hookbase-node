@@ -211,8 +211,8 @@ export interface Endpoint {
  * `secret` out of that response, and the key to verify with is `publicKey` (`whpk_...`).
  */
 export interface EndpointWithSecret extends Endpoint {
-  /** The `whsec_` signing secret, shown once. Absent at runtime for `ed25519` endpoints; read `publicKey`. */
-  secret: string;
+  /** The `whsec_` signing secret, shown once. Absent for `ed25519` endpoints, which return `publicKey` instead. */
+  secret?: string;
 }
 
 /** Backoff curve used between delivery retries. */
