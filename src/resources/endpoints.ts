@@ -124,6 +124,11 @@ export class EndpointsResource extends BaseResource {
    * Rotate the signing secret for an endpoint. The API keeps signing with the previous secret as
    * well until `previousSecretExpiresAt` (one hour by default).
    *
+   * The result depends on the endpoint's signature scheme, so narrow on `signatureScheme`: an
+   * `hmac-sha256` endpoint gets a new `secret` (`whsec_...`, shown once); an `ed25519` endpoint gets
+   * a new key pair, of which you receive `publicKey` and the outgoing `previousPublicKey` (both
+   * `whpk_...`), and no `secret`.
+   *
    * Not retried automatically on a timeout or 5xx unless you pass `retries`: a rotation that did
    * go through and is then repeated replaces the secret you were just handed.
    */

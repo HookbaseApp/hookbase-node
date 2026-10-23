@@ -103,6 +103,14 @@ export interface ListApplicationsParams extends PaginationParams {
 
 export type CircuitState = 'closed' | 'open' | 'half_open';
 
+/**
+ * How an endpoint's deliveries are signed (Standard Webhooks):
+ * - `hmac-sha256` (default): `v1,<base64>` entries, verified with the endpoint's shared `whsec_` secret.
+ * - `ed25519`: `v1a,<base64>` entries, verified with the endpoint's `whpk_` public key. Hookbase
+ *   generates the key pair and never returns the private key.
+ */
+export type SignatureScheme = 'hmac-sha256' | 'ed25519';
+
 export interface Endpoint {
   id: string;
   applicationId: string;
@@ -114,6 +122,13 @@ export interface Endpoint {
   hasSecret: boolean;
   /** Increments on every rotation. */
   secretVersion: number;
+  /** `hmac-sha256` (`v1` signatures) or `ed25519` (`v1a` signatures). */
+  signatureScheme: SignatureScheme;
+  /**
+   * The `whpk_` Ed25519 public key that verifies this endpoint's `v1a` signatures (pass it to
+   * `createWebhook`). Null for `hmac-sha256` endpoints.
+   */
+  publicKey: string | null;
 
   /**
    * Custom delivery headers.
@@ -189,9 +204,15 @@ export interface Endpoint {
   metadata: Record<string, unknown> | null;
 }
 
-/** What `endpoints.create` returns: an endpoint plus the one plaintext view of its secret. */
+/**
+ * What `endpoints.create` returns: an endpoint plus the one plaintext view of its secret.
+ *
+ * An endpoint created with `signatureScheme: 'ed25519'` has no shareable secret: the API leaves
+ * `secret` out of that response, and the key to verify with is `publicKey` (`whpk_...`).
+ */
 export interface EndpointWithSecret extends Endpoint {
-  secret: string;
+  /** The `whsec_` signing secret, shown once. Absent for `ed25519` endpoints, which return `publicKey` instead. */
+  secret?: string;
 }
 
 /** Backoff curve used between delivery retries. */
@@ -244,6 +265,11 @@ export interface CreateEndpointInput {
   circuitSuccessThreshold?: number;
   /** Seconds an open circuit waits before it probes again, 10-3600. */
   circuitCooldownSeconds?: number;
+  /**
+   * `hmac-sha256` (the API default) or `ed25519`. An `ed25519` endpoint is created with a key pair
+   * Hookbase generates; the response carries `publicKey` and no `secret`.
+   */
+  signatureScheme?: SignatureScheme;
 
   /** @deprecated Never accepted by the API and no longer sent; subscribe the endpoint to event types instead (`client.subscriptions.create`). */
   filterTypes?: string[];
@@ -283,6 +309,13 @@ export interface UpdateEndpointInput {
   circuitSuccessThreshold?: number;
   /** Seconds an open circuit waits before it probes again, 10-3600. */
   circuitCooldownSeconds?: number;
+  /**
+   * Switch the signature scheme. A different scheme generates a new key of that kind at once, bumps
+   * `secretVersion` and ends any rotation grace period (the previous key stops signing). Switching
+   * to `hmac-sha256` returns the new secret once, as `secret` on the response; switching to
+   * `ed25519` returns the new `publicKey`.
+   */
+  signatureScheme?: SignatureScheme;
 
   /** @deprecated Never accepted by the API and no longer sent; subscribe the endpoint to event types instead (`client.subscriptions.create`). */
   filterTypes?: string[];
@@ -299,8 +332,9 @@ export interface ListEndpointsParams extends PaginationParams {
   isDisabled?: boolean;
 }
 
-/** What `endpoints.rotateSecret` returns. */
-export interface RotateEndpointSecretResult {
+/** What `endpoints.rotateSecret` returns for an `hmac-sha256` endpoint. */
+export interface RotateHmacEndpointSecretResult {
+  signatureScheme: 'hmac-sha256';
   /** The new signing secret (`whsec_...`). Shown once. */
   secret: string;
   /**
@@ -311,6 +345,35 @@ export interface RotateEndpointSecretResult {
   /** The endpoint's secret version after the rotation. */
   secretVersion: number;
 }
+
+/**
+ * What `endpoints.rotateSecret` returns for an `ed25519` endpoint: a new key pair, of which only
+ * the public half is ever returned.
+ */
+export interface RotateEd25519EndpointSecretResult {
+  signatureScheme: 'ed25519';
+  /** The new `whpk_` public key. Verify with it once you have switched over. */
+  publicKey: string;
+  /**
+   * The `whpk_` public key being rotated out. Until `previousSecretExpiresAt` the
+   * `webhook-signature` header carries `v1a,<old> v1a,<new>`, so this key keeps verifying.
+   */
+  previousPublicKey: string | null;
+  /** Ed25519 endpoints have no shareable secret; the private key never leaves Hookbase. */
+  secret?: undefined;
+  /** Until this time deliveries are signed with both the new and the previous private key. */
+  previousSecretExpiresAt: string;
+  /** The endpoint's secret version after the rotation. */
+  secretVersion: number;
+}
+
+/**
+ * What `endpoints.rotateSecret` returns. Narrow on `signatureScheme`: HMAC endpoints get a new
+ * `secret`, Ed25519 endpoints a new `publicKey` (and the outgoing `previousPublicKey`).
+ */
+export type RotateEndpointSecretResult =
+  | RotateHmacEndpointSecretResult
+  | RotateEd25519EndpointSecretResult;
 
 export interface EndpointStats {
   totalMessages: number;

@@ -487,6 +487,25 @@ describe('outbound contract', () => {
         secretVersion: 3,
       });
     });
+
+    it('returns the new and previous public keys, and no secret, for an ed25519 endpoint', async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({
+        signatureScheme: 'ed25519',
+        publicKey: 'whpk_new',
+        previousPublicKey: 'whpk_old',
+        previousSecretExpiresAt: '2026-10-17T01:00:00Z',
+        secretVersion: 4,
+      }));
+
+      const result = await client.endpoints.rotateSecret('app_1', 'ep_1');
+
+      expect(result.signatureScheme).toBe('ed25519');
+      if (result.signatureScheme !== 'ed25519') throw new Error('expected the ed25519 shape');
+      expect(result.publicKey).toBe('whpk_new');
+      expect(result.previousPublicKey).toBe('whpk_old');
+      expect(result.secret).toBeUndefined();
+      expect(result.secretVersion).toBe(4);
+    });
   });
 
   describe('messages.export', () => {

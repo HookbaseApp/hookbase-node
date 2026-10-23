@@ -70,6 +70,9 @@ export type {
   ListEndpointsParams,
   EndpointStats,
   RotateEndpointSecretResult,
+  RotateHmacEndpointSecretResult,
+  RotateEd25519EndpointSecretResult,
+  SignatureScheme,
 
   // Event Types (outbound)
   EventType,
