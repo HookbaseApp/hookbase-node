@@ -361,7 +361,7 @@ function normalizeHeaders(headers: WebhookHeadersInput): Record<string, string> 
 
   // A Fetch `Headers` keeps its entries internally: Object.entries() on one is empty, so every
   // header read as missing.
-  if (typeof Headers !== 'undefined' && headers instanceof Headers) {
+  if (isHeadersLike(headers)) {
     headers.forEach((value, key) => {
       normalized[key.toLowerCase()] = value;
     });
@@ -375,6 +375,17 @@ function normalizeHeaders(headers: WebhookHeadersInput): Record<string, string> 
   }
 
   return normalized;
+}
+
+/**
+ * A Fetch `Headers`, including one from another realm or a polyfill (node-fetch, a bundled
+ * fetch): those fail `instanceof Headers` but iterate with `forEach` just the same, and have no
+ * own enumerable entries for the plain-object path to find.
+ */
+function isHeadersLike(headers: WebhookHeadersInput): headers is Headers {
+  if (typeof Headers !== 'undefined' && headers instanceof Headers) return true;
+  const h = headers as { forEach?: unknown; get?: unknown };
+  return typeof h.forEach === 'function' && typeof h.get === 'function';
 }
 
 function payloadToString(payload: WebhookPayload): string {

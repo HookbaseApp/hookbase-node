@@ -2027,7 +2027,7 @@ export interface ListSchemasParams {
 
 export interface SchemaValidationResult {
   valid: boolean;
-  /** One entry per violation; `path` is the JSON path ('' for the root). */
+  /** One entry per violation; `path` is the JSON path (`root` for the root). */
   errors: Array<{ path: string; message: string }>;
   /** The payload that was validated, echoed back. */
   payload?: unknown;

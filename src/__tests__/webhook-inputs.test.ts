@@ -51,6 +51,26 @@ describe('webhook verification inputs', () => {
     expect(wh.verify(payload, headers)).toEqual({ a: 1 });
   });
 
+  it('accepts a Headers from another realm or polyfill (not instanceof the global Headers)', () => {
+    // node-fetch's Headers, or a bundled fetch's: iterates with forEach, keeps its entries off
+    // the object (no own enumerable keys), and is not an instance of the global class.
+    const wh = createWebhook(secret);
+    const payload = '{"a":1}';
+    const h = wh.generateTestHeaders(payload);
+    const entries = new Map<string, string>([
+      ['Webhook-Id', h['webhook-id']],
+      ['Webhook-Timestamp', h['webhook-timestamp']],
+      ['Webhook-Signature', h['webhook-signature']],
+    ]);
+    const foreign = {
+      get: (name: string) => entries.get(name) ?? null,
+      forEach: (cb: (value: string, key: string) => void) => entries.forEach((v, k) => cb(v, k)),
+    };
+    expect(foreign).not.toBeInstanceOf(Headers);
+    expect(Object.entries(foreign).some(([, v]) => typeof v === 'string')).toBe(false);
+    expect(wh.verify(payload, foreign as unknown as Headers)).toEqual({ a: 1 });
+  });
+
   it("accepts Node's IncomingHttpHeaders (array and undefined values)", () => {
     const wh = createWebhook(secret);
     const payload = '{"a":1}';
