@@ -1,20 +1,61 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import {
+  createHmac,
+  createPrivateKey,
+  createPublicKey,
+  sign as ed25519Sign,
+  timingSafeEqual,
+  verify as ed25519Verify,
+  type KeyObject,
+} from 'node:crypto';
 import { HookbaseWebhookVerificationError } from '../errors';
-import type { VerifyOptions, WebhookHeaders } from '../types';
+import type { SignatureScheme, VerifyOptions, WebhookHeaders } from '../types';
 
 const DEFAULT_TOLERANCE = 300; // 5 minutes
 
+/** Standard Webhooks Ed25519 public key prefix: `whpk_<base64 of the 32-byte key>`. */
+const ED25519_PUBLIC_KEY_PREFIX = 'whpk_';
+/** Standard Webhooks Ed25519 secret key prefix: `whsk_<base64 of seed (32) || public key (32)>`. */
+const ED25519_SECRET_KEY_PREFIX = 'whsk_';
+
+/** The `webhook-signature` entry version each scheme signs with. */
+const SIGNATURE_VERSION: Record<SignatureScheme, string> = {
+  'hmac-sha256': 'v1',
+  ed25519: 'v1a',
+};
+
 /**
- * Webhook verification and parsing utilities
+ * Webhook verification and parsing utilities.
+ *
+ * The scheme is picked from the key you construct it with, the same way the Hookbase API picks it:
+ * - `whsec_...` (the endpoint's signing secret): verifies `v1` (HMAC-SHA256) signatures.
+ * - `whpk_...` (an `ed25519` endpoint's public key): verifies `v1a` (Ed25519) signatures. A public
+ *   key cannot sign, so `sign` and `generateTestHeaders` throw.
+ * - `whsk_...` (an Ed25519 secret key, e.g. one you generated for tests): verifies `v1a` with its
+ *   public half, and can also sign test headers.
  */
 export class Webhook {
   private secret: string;
+  /** The signature scheme this instance verifies, decided by the key's prefix. */
+  readonly scheme: SignatureScheme;
+  private ed25519PublicKey?: KeyObject;
+  private ed25519PrivateKey?: KeyObject;
 
   constructor(secret: string) {
     if (!secret) {
       throw new Error('Webhook secret is required');
     }
     this.secret = secret;
+
+    if (secret.startsWith(ED25519_PUBLIC_KEY_PREFIX)) {
+      this.scheme = 'ed25519';
+      this.ed25519PublicKey = importEd25519PublicKey(secret);
+    } else if (secret.startsWith(ED25519_SECRET_KEY_PREFIX)) {
+      this.scheme = 'ed25519';
+      this.ed25519PrivateKey = importEd25519SecretKey(secret);
+      this.ed25519PublicKey = createPublicKey(this.ed25519PrivateKey);
+    } else {
+      this.scheme = 'hmac-sha256';
+    }
   }
 
   /**
@@ -95,6 +136,10 @@ export class Webhook {
       throw new HookbaseWebhookVerificationError('No valid signatures found');
     }
 
+    if (this.scheme === 'ed25519') {
+      return this.verifyEd25519(signedContent, signatures);
+    }
+
     // Compute expected signature
     const expectedSignature = this.sign(signedContent);
 
@@ -117,20 +162,54 @@ export class Webhook {
       }
     }
 
-    throw new HookbaseWebhookVerificationError(
-      'Webhook signature verification failed'
-    );
+    throw verificationFailed('hmac-sha256', signatures);
   }
 
   /**
-   * Generate a signature for testing purposes
+   * `v1a` entries: accept if any of them verifies against the public key. Several entries appear
+   * while a rotated key is in its grace period (`v1a,<old> v1a,<new>`).
+   */
+  private verifyEd25519(signedContent: string, signatures: ParsedSignature[]): boolean {
+    const data = Buffer.from(signedContent, 'utf8');
+
+    for (const sig of signatures) {
+      if (sig.version !== 'v1a') continue;
+      try {
+        const signature = Buffer.from(sig.signature, 'base64');
+        // Buffer's base64 decoder skips junk and stops at padding; accept only the canonical
+        // encoding of a 64-byte signature, which is what the API sends.
+        if (
+          signature.length === 64 &&
+          signature.toString('base64') === sig.signature &&
+          ed25519Verify(null, data, this.ed25519PublicKey!, signature)
+        ) {
+          return true;
+        }
+      } catch {
+        // Continue to next signature
+      }
+    }
+
+    throw verificationFailed('ed25519', signatures);
+  }
+
+  /**
+   * Sign content for testing purposes: HMAC-SHA256 with a `whsec_` secret, Ed25519 with a `whsk_`
+   * secret key. A `whpk_` public key cannot sign, so this throws for one.
    *
-   * @param payload - The payload to sign
-   * @param webhookId - The webhook ID
-   * @param timestamp - The timestamp (defaults to current time)
-   * @returns The signature string
+   * @param signedContent - `{webhook-id}.{webhook-timestamp}.{payload}`
+   * @returns The base64 signature, without the `v1,` / `v1a,` prefix
    */
   sign(signedContent: string): string {
+    if (this.scheme === 'ed25519') {
+      if (!this.ed25519PrivateKey) {
+        throw new Error(
+          'Cannot sign with an Ed25519 public key (whpk_). Construct the Webhook with a whsk_ secret key to generate test signatures.'
+        );
+      }
+      return ed25519Sign(null, Buffer.from(signedContent, 'utf8'), this.ed25519PrivateKey).toString('base64');
+    }
+
     const hmac = createHmac('sha256', this.decodeSecret());
     hmac.update(signedContent);
     return hmac.digest('base64');
@@ -158,7 +237,7 @@ export class Webhook {
     return {
       'webhook-id': webhookId,
       'webhook-timestamp': timestamp.toString(),
-      'webhook-signature': `v1,${signature}`,
+      'webhook-signature': `${SIGNATURE_VERSION[this.scheme]},${signature}`,
     };
   }
 
@@ -191,6 +270,57 @@ export class Webhook {
     }
     return Buffer.from(raw, 'base64');
   }
+}
+
+/** Decode `whpk_<base64>` (32 raw bytes) into a public KeyObject. */
+function importEd25519PublicKey(publicKey: string): KeyObject {
+  const raw = Buffer.from(publicKey.slice(ED25519_PUBLIC_KEY_PREFIX.length), 'base64');
+  if (raw.length !== 32) {
+    throw new Error(`Ed25519 public key (whpk_) must be 32 bytes, got ${raw.length}`);
+  }
+  return createPublicKey({
+    key: { kty: 'OKP', crv: 'Ed25519', x: raw.toString('base64url') },
+    format: 'jwk',
+  });
+}
+
+/** Decode `whsk_<base64>` (32-byte seed followed by the 32-byte public key) into a private KeyObject. */
+function importEd25519SecretKey(secretKey: string): KeyObject {
+  const raw = Buffer.from(secretKey.slice(ED25519_SECRET_KEY_PREFIX.length), 'base64');
+  if (raw.length !== 64) {
+    throw new Error(`Ed25519 secret key (whsk_) must be 64 bytes (seed || public key), got ${raw.length}`);
+  }
+  return createPrivateKey({
+    key: {
+      kty: 'OKP',
+      crv: 'Ed25519',
+      d: raw.subarray(0, 32).toString('base64url'),
+      x: raw.subarray(32).toString('base64url'),
+    },
+    format: 'jwk',
+  });
+}
+
+/**
+ * The failure error. When the header has no entry of the version this key verifies, say so: that
+ * is a key/scheme mismatch (e.g. a `whsec_` secret for an endpoint that signs `v1a`), not tampering.
+ */
+function verificationFailed(
+  scheme: SignatureScheme,
+  signatures: ParsedSignature[]
+): HookbaseWebhookVerificationError {
+  const expected = SIGNATURE_VERSION[scheme];
+  if (!signatures.some((sig) => sig.version === expected)) {
+    const other: SignatureScheme = scheme === 'ed25519' ? 'hmac-sha256' : 'ed25519';
+    const keyHint = other === 'ed25519' ? "the endpoint's whpk_ public key" : "the endpoint's whsec_ secret";
+    const hint = signatures.some((sig) => sig.version === SIGNATURE_VERSION[other])
+      ? ` The endpoint signs with ${other} (${SIGNATURE_VERSION[other]}); verify with ${keyHint}.`
+      : '';
+    return new HookbaseWebhookVerificationError(
+      `Webhook signature verification failed: no ${expected} signature in the header.${hint}`
+    );
+  }
+  return new HookbaseWebhookVerificationError('Webhook signature verification failed');
 }
 
 interface ParsedSignature {
@@ -235,7 +365,8 @@ function generateId(): string {
 /**
  * Create a webhook verifier instance
  *
- * @param secret - The webhook signing secret (from endpoint creation)
+ * @param secret - The endpoint's signing secret (`whsec_...`), or for an `ed25519` endpoint its
+ *   public key (`whpk_...`, the endpoint's `publicKey`)
  * @returns A Webhook instance for verifying webhooks
  *
  * @example
@@ -246,6 +377,9 @@ function generateId(): string {
  *
  * // In your webhook handler
  * const payload = webhook.verify(req.body, req.headers);
+ *
+ * // Ed25519 (v1a) endpoint: verify with its public key
+ * const v1a = createWebhook('whpk_...');
  * ```
  */
 export function createWebhook(secret: string): Webhook {

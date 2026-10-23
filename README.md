@@ -125,6 +125,13 @@ const endpoint = await hookbase.endpoints.create('app_123', {
 });
 console.log('Secret:', endpoint.secret); // Save this!
 
+// Ed25519 (Standard Webhooks v1a): Hookbase keeps the private key; you get the public key
+const ed = await hookbase.endpoints.create('app_123', {
+  url: 'https://example.com/webhooks',
+  signatureScheme: 'ed25519',
+});
+console.log('Public key:', ed.publicKey); // whpk_... (also on every GET; not a secret)
+
 // Update
 const endpoint = await hookbase.endpoints.update('app_123', 'ep_456', {
   url: 'https://example.com/webhooks/v2',
@@ -134,8 +141,13 @@ const endpoint = await hookbase.endpoints.update('app_123', 'ep_456', {
 await hookbase.endpoints.disable('app_123', 'ep_456');
 await hookbase.endpoints.enable('app_123', 'ep_456');
 
-// Rotate signing secret
-const { secret } = await hookbase.endpoints.rotateSecret('app_123', 'ep_456');
+// Rotate signing secret. The previous key keeps signing until previousSecretExpiresAt.
+const rotated = await hookbase.endpoints.rotateSecret('app_123', 'ep_456');
+if (rotated.signatureScheme === 'ed25519') {
+  console.log(rotated.publicKey, rotated.previousPublicKey); // whpk_... new and outgoing
+} else {
+  console.log(rotated.secret); // whsec_..., shown once
+}
 
 // Get statistics
 const stats = await hookbase.endpoints.getStats('app_123', 'ep_456');
@@ -344,6 +356,23 @@ app.post('/webhooks', express.raw({ type: 'application/json' }), (req, res) => {
 });
 ```
 
+### Ed25519 (v1a) endpoints
+
+For an endpoint created with `signatureScheme: 'ed25519'`, pass its public key (`endpoint.publicKey`,
+`whpk_...`) instead of a secret. The scheme is picked from the key's prefix, and verification works
+the same way: same headers, same timestamp tolerance, and any matching entry in a multi-entry
+`webhook-signature` header is accepted (during a key rotation it carries `v1a,<old> v1a,<new>`).
+
+```typescript
+const webhook = createWebhook(process.env.HOOKBASE_PUBLIC_KEY!); // whpk_...
+webhook.scheme; // 'ed25519'
+
+const payload = webhook.verify(req.body.toString(), req.headers);
+```
+
+A `whsec_` secret verifies only `v1` signatures and a `whpk_` key only `v1a`; a mismatch fails with an
+error that names the scheme the endpoint actually uses.
+
 ### Testing Webhooks
 
 Generate test headers for local development:
@@ -356,6 +385,9 @@ const headers = webhook.generateTestHeaders(payload);
 
 // Use these headers to test your webhook handler
 ```
+
+With an Ed25519 secret key (`whsk_...`) the test headers are signed `v1a`; a `whpk_` public key
+cannot sign, so `generateTestHeaders` throws for one.
 
 ## Error Handling
 
