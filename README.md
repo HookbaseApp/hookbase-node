@@ -8,13 +8,15 @@ Official Node.js SDK for [Hookbase](https://hookbase.app) - the webhook manageme
 npm install @hookbase/sdk
 ```
 
+Requires Node.js 18 or later. Ships ES module and CommonJS builds.
+
 ## Quick Start
 
 ```typescript
 import { Hookbase } from '@hookbase/sdk';
 
 const hookbase = new Hookbase({
-  apiKey: 'your_api_key',
+  apiKey: 'whr_your_api_key',
 });
 
 // Send a webhook
@@ -32,7 +34,7 @@ await hookbase.messages.send('app_123', {
 - **Full API Coverage**: Access all Hookbase API endpoints
 - **TypeScript First**: Complete type definitions
 - **Webhook Verification**: Verify incoming webhook signatures
-- **Automatic Retries**: Built-in retry logic with exponential backoff
+- **Automatic Retries**: Retries that never repeat an unsafe request (see [Retries](#retries))
 - **Pagination Helpers**: Async iterators for large datasets
 - **Error Handling**: Specific error classes for different failure modes
 
@@ -45,7 +47,7 @@ import { Hookbase, createClient } from '@hookbase/sdk';
 
 // Option 1: Constructor
 const hookbase = new Hookbase({
-  apiKey: process.env.HOOKBASE_API_KEY,
+  apiKey: process.env.HOOKBASE_API_KEY!,
   baseUrl: 'https://api.hookbase.app', // Optional
   timeout: 30000, // Optional: 30 seconds
   retries: 3, // Optional: retry count
@@ -53,8 +55,8 @@ const hookbase = new Hookbase({
 });
 
 // Option 2: Factory function
-const hookbase = createClient({
-  apiKey: process.env.HOOKBASE_API_KEY,
+const client = createClient({
+  apiKey: process.env.HOOKBASE_API_KEY!,
 });
 ```
 
@@ -63,29 +65,32 @@ const hookbase = createClient({
 Applications represent your customers or tenants.
 
 ```typescript
-// List applications
-const { data, total } = await hookbase.applications.list({ limit: 50 });
+// List applications (cursor-paginated: pass `cursor` back for the next page)
+const page = await hookbase.applications.list({ limit: 50 });
+const nextPage = page.cursor
+  ? await hookbase.applications.list({ limit: 50, cursor: page.cursor })
+  : null;
 
 // Get by ID
 const app = await hookbase.applications.get('app_123');
 
-// Get by your internal UID
-const app = await hookbase.applications.getByUid('customer_123');
+// Get by your internal ID (externalId)
+const byUid = await hookbase.applications.getByUid('customer_123');
 
 // Create
-const app = await hookbase.applications.create({
+const created = await hookbase.applications.create({
   name: 'Acme Corp',
-  uid: 'customer_123', // Your internal ID
+  uid: 'customer_123', // Your internal ID, stored as externalId
   metadata: { plan: 'enterprise' },
 });
 
 // Get or create (idempotent)
-const app = await hookbase.applications.getOrCreate('customer_123', {
+const acme = await hookbase.applications.getOrCreate('customer_123', {
   name: 'Acme Corp',
 });
 
 // Update
-const app = await hookbase.applications.update('app_123', {
+await hookbase.applications.update('app_123', {
   name: 'Acme Corporation',
 });
 
@@ -107,7 +112,7 @@ Endpoints are webhook destinations.
 const { data } = await hookbase.endpoints.list('app_123');
 
 // Get endpoint
-const endpoint = await hookbase.endpoints.get('app_123', 'ep_456');
+const existing = await hookbase.endpoints.get('app_123', 'ep_456');
 
 // Create endpoint (returns signing secret)
 const endpoint = await hookbase.endpoints.create('app_123', {
@@ -133,7 +138,7 @@ const ed = await hookbase.endpoints.create('app_123', {
 console.log('Public key:', ed.publicKey); // whpk_... (also on every GET; not a secret)
 
 // Update
-const endpoint = await hookbase.endpoints.update('app_123', 'ep_456', {
+await hookbase.endpoints.update('app_123', 'ep_456', {
   url: 'https://example.com/webhooks/v2',
 });
 
@@ -141,8 +146,9 @@ const endpoint = await hookbase.endpoints.update('app_123', 'ep_456', {
 await hookbase.endpoints.disable('app_123', 'ep_456');
 await hookbase.endpoints.enable('app_123', 'ep_456');
 
-// Rotate signing secret. The previous key keeps signing until previousSecretExpiresAt.
-const rotated = await hookbase.endpoints.rotateSecret('app_123', 'ep_456');
+// Rotate signing secret. The previous key keeps signing until previousSecretExpiresAt
+// (gracePeriodSeconds, 0-86400, default 3600).
+const rotated = await hookbase.endpoints.rotateSecret('app_123', 'ep_456', { gracePeriodSeconds: 600 });
 if (rotated.signatureScheme === 'ed25519') {
   console.log(rotated.publicKey, rotated.previousPublicKey); // whpk_... new and outgoing
 } else {
@@ -155,6 +161,10 @@ console.log(`Success rate: ${stats.successRate}%`);
 
 // Recover circuit breaker
 await hookbase.endpoints.recoverCircuit('app_123', 'ep_456');
+
+// Send a test event and see how the endpoint answered
+const test = await hookbase.endpoints.test('app_123', 'ep_456', { eventType: 'order.created' });
+console.log(test.success, test.delivery.responseStatus);
 
 // Delete
 await hookbase.endpoints.delete('app_123', 'ep_456');
@@ -169,8 +179,8 @@ Event types define the webhook events you can send.
 const { data } = await hookbase.eventTypes.list({ category: 'orders' });
 
 // Get by ID or name
-const eventType = await hookbase.eventTypes.get('evt_123');
-const eventType = await hookbase.eventTypes.getByName('order.created');
+const byId = await hookbase.eventTypes.get('evt_123');
+const byName = await hookbase.eventTypes.getByName('order.created');
 
 // Create
 const eventType = await hookbase.eventTypes.create({
@@ -182,7 +192,7 @@ const eventType = await hookbase.eventTypes.create({
 });
 
 // Get or create
-const eventType = await hookbase.eventTypes.getOrCreate('order.created', {
+const orderCreated = await hookbase.eventTypes.getOrCreate('order.created', {
   displayName: 'Order Created',
   category: 'orders',
 });
@@ -202,10 +212,12 @@ const { data } = await hookbase.subscriptions.list('app_123', {
   endpointId: 'ep_456',
 });
 
-// Create
+// Create, optionally with filters
 const sub = await hookbase.subscriptions.create('app_123', {
   endpointId: 'ep_456',
   eventTypeId: 'evt_789',
+  labelFilters: { region: 'eu' }, // match the labels sent with messages.send
+  filterExpression: 'amount > 100', // JSONata, evaluated on the payload
 });
 
 // Enable/Disable
@@ -231,48 +243,43 @@ await hookbase.subscriptions.delete('app_123', 'sub_123');
 Send webhooks and manage deliveries.
 
 ```typescript
-// Send a webhook
+// Send a webhook. A repeated idempotencyKey returns the first send's result instead of
+// sending again; without one the SDK generates a key per call, so its own retries are safe.
 const result = await hookbase.messages.send('app_123', {
   eventType: 'order.created',
   payload: {
     orderId: 'ord_123',
     amount: 99.99,
   },
-  eventId: 'unique_event_id', // For deduplication
+  idempotencyKey: 'order_created_ord_123',
+  labels: { region: 'eu' }, // subscriptions can filter on these
+  priority: 1, // 0=Critical ... 4=Bulk
   metadata: { source: 'checkout' },
 });
-console.log(`Message ID: ${result.messageId}`);
+console.log(`Event ${result.eventId} queued for ${result.messagesQueued} endpoint(s)`);
 
-// Send with idempotency key (safe for retries)
-const result = await hookbase.messages.send(
-  'app_123',
-  { eventType: 'order.created', payload: { orderId: 'ord_123' } },
-  { idempotencyKey: 'order_created_ord_123' }
-);
-
-// List messages
-const { data } = await hookbase.messages.list('app_123', {
+// Deliver to specific endpoints only
+await hookbase.messages.send('app_123', {
   eventType: 'order.created',
-  startDate: '2024-01-01',
+  payload: { orderId: 'ord_123' },
+  endpointIds: ['ep_456'],
+});
+
+// List outbound messages (one per event per endpoint)
+const { data: messages } = await hookbase.messages.list('app_123', {
+  eventType: 'order.created',
+  status: 'failed',
 });
 
 // Get message details
 const message = await hookbase.messages.get('app_123', 'msg_456');
 
-// List delivery attempts
-const { data } = await hookbase.messages.listOutbound('app_123', 'msg_456');
-
-// Get outbound message details
-const outbound = await hookbase.messages.getOutbound('app_123', 'out_789');
-
 // View attempt history
-const attempts = await hookbase.messages.listAttempts('app_123', 'out_789');
+const attempts = await hookbase.messages.listAttempts('app_123', 'msg_456');
 
-// Retry a failed delivery
-await hookbase.messages.retry('app_123', 'out_789');
-
-// Resend to all endpoints
-await hookbase.messages.resend('app_123', 'msg_456');
+// Replay a message (creates a new outbound message)
+const replay = await hookbase.messages.retry('app_123', 'msg_456');
+console.log(replay.newMessageId);
 ```
 
 ### Portal Tokens
@@ -282,7 +289,8 @@ Generate tokens for the embeddable portal.
 ```typescript
 // Create a portal token
 const token = await hookbase.portalTokens.create('app_123', {
-  expiresIn: 3600, // 1 hour
+  expiresInDays: 1, // 1-365, default 30
+  scopes: ['read', 'write'],
 });
 
 // Use with @hookbase/portal
@@ -334,14 +342,17 @@ await hookbase.events.list({ sourceId: 'stripe' });
 Verify incoming webhooks in your application.
 
 ```typescript
+import express from 'express';
 import { createWebhook, HookbaseWebhookVerificationError } from '@hookbase/sdk';
 
+const app = express();
 const webhook = createWebhook('whsec_your_signing_secret');
 
-// Express.js example
+// Express.js example. Verify the raw body: parsing and re-serializing it breaks the signature.
 app.post('/webhooks', express.raw({ type: 'application/json' }), (req, res) => {
   try {
-    const payload = webhook.verify(req.body.toString(), req.headers);
+    // A Buffer or string body; Node `req.headers`, a plain object or a Fetch `Headers` all work.
+    const payload = webhook.verify<{ type: string }>(req.body, req.headers);
 
     // Process the verified payload
     console.log('Event:', payload.type);
@@ -364,10 +375,12 @@ the same way: same headers, same timestamp tolerance, and any matching entry in 
 `webhook-signature` header is accepted (during a key rotation it carries `v1a,<old> v1a,<new>`).
 
 ```typescript
+import { createWebhook } from '@hookbase/sdk';
+
 const webhook = createWebhook(process.env.HOOKBASE_PUBLIC_KEY!); // whpk_...
 webhook.scheme; // 'ed25519'
 
-const payload = webhook.verify(req.body.toString(), req.headers);
+const payload = webhook.verify(rawBody, headers);
 ```
 
 A `whsec_` secret verifies only `v1` signatures and a `whpk_` key only `v1a`; a mismatch fails with an
@@ -378,13 +391,18 @@ error that names the scheme the endpoint actually uses.
 Generate test headers for local development:
 
 ```typescript
-const webhook = createWebhook('whsec_test_secret');
+import { createWebhook } from '@hookbase/sdk';
 
-const payload = JSON.stringify({ orderId: 'test_123' });
-const headers = webhook.generateTestHeaders(payload);
+const webhook = createWebhook('whsec_dGVzdF9zZWNyZXRfZm9yX2xvY2FsX2Rldg==');
+
+const body = JSON.stringify({ orderId: 'test_123' });
+const testHeaders = webhook.generateTestHeaders(body);
 
 // Use these headers to test your webhook handler
 ```
+
+`webhook.verify(body, headers, { tolerance: 600 })` changes the timestamp tolerance (default 300
+seconds). `webhook.verifySignature(body, id, timestamp, signature)` checks only the signature.
 
 With an Ed25519 secret key (`whsk_...`) the test headers are signed `v1a`; a `whpk_` public key
 cannot sign, so `generateTestHeaders` throws for one.
@@ -421,6 +439,19 @@ try {
 }
 ```
 
+## Retries
+
+- **429** is retried for any method, after `Retry-After` (seconds or an HTTP date; 60s if absent).
+- **5xx, timeouts and network errors** are retried with exponential backoff for GET, PUT, PATCH
+  and DELETE. A POST is retried on these only with an idempotency key (or an explicit per-request
+  `retries`), since the first attempt may have run. A POST whose connection was refused is retried.
+- **Other 4xx** are never retried. A request cancelled with `signal` is not retried.
+
+## API keys
+
+`hookbase.apiKeys.list()` and `delete()` work with an API key. `create()` requires a dashboard user
+session: a client authenticated with a `whr_` key gets `HookbaseForbiddenError`.
+
 ## Request Options
 
 Override defaults for specific requests:
@@ -433,7 +464,7 @@ const result = await hookbase.messages.send(
     timeout: 60000, // Custom timeout
     retries: 5, // Custom retry count
     idempotencyKey: 'unique_key', // For safe retries
-    signal: abortController.signal, // For cancellation
+    signal: abortController.signal, // For cancellation (not retried once aborted)
   }
 );
 ```
