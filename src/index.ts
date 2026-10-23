@@ -3,6 +3,7 @@ export { Hookbase, createClient } from './client';
 
 // Webhook verification
 export { Webhook, createWebhook } from './webhooks/verify';
+export type { WebhookHeadersInput, WebhookPayload } from './webhooks/verify';
 
 // Error classes
 export {

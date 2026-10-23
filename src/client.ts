@@ -182,7 +182,9 @@ export class Hookbase implements ApiClient {
       method.toUpperCase() !== 'POST' ||
       !!idempotencyKey ||
       options?.requestOptions?.retries !== undefined;
-    const retries = options?.requestOptions?.retries ?? this.retries;
+    // A negative count skipped the loop entirely and threw `undefined` without sending anything.
+    const retries = Math.max(0, options?.requestOptions?.retries ?? this.retries);
+    const signal = options?.requestOptions?.signal;
 
     // Build URL with query parameters
     let url = `${this.baseUrl}${path}`;
@@ -232,12 +234,18 @@ export class Hookbase implements ApiClient {
           headers,
           options?.body,
           timeout,
-          options?.requestOptions?.signal
+          signal
         );
 
         return response as T;
       } catch (error) {
         lastError = error as Error;
+
+        // The caller cancelled: give up now. This used to be treated like a network failure, so a
+        // cancelled GET went round the retry loop (with backoff) before the abort surfaced.
+        if (signal?.aborted) {
+          throw error;
+        }
 
         // Don't retry on certain errors
         if (
@@ -256,7 +264,7 @@ export class Hookbase implements ApiClient {
             if (this.debug) {
               console.log(`[Hookbase] Rate limited, waiting ${waitTime}ms`);
             }
-            await sleep(waitTime);
+            await sleep(waitTime, signal);
             continue;
           }
           throw error;
@@ -268,7 +276,9 @@ export class Hookbase implements ApiClient {
           throw error;
         }
 
-        if (!retryAmbiguousFailures) {
+        // A connection that was never established cannot have reached the server, so resending
+        // it is safe even for a POST without an idempotency key.
+        if (!retryAmbiguousFailures && !neverSent(error)) {
           throw error;
         }
 
@@ -283,7 +293,7 @@ export class Hookbase implements ApiClient {
               `[Hookbase] Request failed, retrying in ${Math.round(waitTime)}ms (attempt ${attempt + 1}/${retries})`
             );
           }
-          await sleep(waitTime);
+          await sleep(waitTime, signal);
         }
       }
     }
@@ -316,7 +326,8 @@ export class Hookbase implements ApiClient {
         signal: combinedSignal,
       });
 
-      clearTimeout(timeoutId);
+      // The timer stays armed until the body has been read (see `finally`): clearing it as soon
+      // as the headers arrived left a stalled body read with no timeout at all.
 
       // Extract request ID from headers
       const requestId = response.headers.get('x-request-id') ?? undefined;
@@ -330,9 +341,9 @@ export class Hookbase implements ApiClient {
         // was then reported (and retried) as a network error.
         const contentType = response.headers.get('content-type');
         if (contentType && !/[/+]json\b/i.test(contentType)) {
-          return response.text();
+          return await response.text();
         }
-        return response.json();
+        return await response.json();
       }
 
       // Handle error responses
@@ -374,14 +385,12 @@ export class Hookbase implements ApiClient {
           throw new HookbaseValidationError(
             extractErrorMessage(errorBody, 'Validation failed'),
             requestId,
-            extractValidationErrors(errorBody)
+            extractValidationErrors(errorBody),
+            response.status
           );
 
         case 429:
-          const retryAfter = parseInt(
-            response.headers.get('retry-after') ?? '60',
-            10
-          );
+          const retryAfter = parseRetryAfter(response.headers.get('retry-after'));
           throw new HookbaseRateLimitError(
             extractErrorMessage(errorBody, 'Rate limit exceeded'),
             retryAfter,
@@ -392,17 +401,18 @@ export class Hookbase implements ApiClient {
           throw HookbaseApiError.fromResponse(response.status, errorBody, requestId);
       }
     } catch (error) {
-      clearTimeout(timeoutId);
-
       if (error instanceof HookbaseApiError) {
         throw error;
       }
 
+      // Cancelled by the caller: surface their abort as-is (fetch rejects with the signal's
+      // reason, which is not always an AbortError).
+      if (signal?.aborted) {
+        throw error;
+      }
+
       if (error instanceof Error) {
-        if (error.name === 'AbortError') {
-          if (signal?.aborted) {
-            throw error;
-          }
+        if (error.name === 'AbortError' || timeoutController.signal.aborted) {
           throw new HookbaseTimeoutError(`Request timed out after ${timeout}ms`);
         }
 
@@ -410,12 +420,63 @@ export class Hookbase implements ApiClient {
       }
 
       throw error;
+    } finally {
+      clearTimeout(timeoutId);
     }
   }
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal!.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+const DEFAULT_RETRY_AFTER_SECONDS = 60;
+
+/**
+ * Seconds to wait from a `Retry-After` header: delta-seconds or an HTTP-date (RFC 9110 10.2.3).
+ * `parseInt` alone turned an HTTP-date into NaN, and `setTimeout(NaN)` retried immediately.
+ */
+export function parseRetryAfter(header: string | null, now: number = Date.now()): number {
+  if (header === null || header.trim() === '') return DEFAULT_RETRY_AFTER_SECONDS;
+  const value = header.trim();
+  if (/^\d+$/.test(value)) return parseInt(value, 10);
+  const date = Date.parse(value);
+  if (!Number.isNaN(date)) return Math.max(0, Math.ceil((date - now) / 1000));
+  return DEFAULT_RETRY_AFTER_SECONDS;
+}
+
+/** Connection-phase failures: the request never reached the server. */
+const NEVER_SENT_CODES = new Set([
+  'ECONNREFUSED',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'UND_ERR_CONNECT_TIMEOUT',
+]);
+
+function neverSent(error: unknown): boolean {
+  if (!(error instanceof HookbaseNetworkError)) return false;
+  // undici's fetch reports `TypeError: fetch failed` with the socket error as its `cause`.
+  let cause: unknown = error.cause;
+  for (let depth = 0; cause && depth < 3; depth++) {
+    const code = (cause as { code?: unknown }).code;
+    if (typeof code === 'string' && NEVER_SENT_CODES.has(code)) return true;
+    cause = (cause as { cause?: unknown }).cause;
+  }
+  return false;
 }
 
 function combineAbortSignals(...signals: AbortSignal[]): AbortSignal {
