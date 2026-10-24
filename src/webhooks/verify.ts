@@ -10,6 +10,19 @@ import {
 import { HookbaseWebhookVerificationError } from '../errors';
 import type { SignatureScheme, VerifyOptions, WebhookHeaders } from '../types';
 
+/**
+ * Any header collection a webhook handler is likely to have: the plain `WebhookHeaders` object,
+ * Node's `IncomingHttpHeaders` (`req.headers` in Express/Fastify/http, whose values may be
+ * `string[] | undefined`), or a Fetch API `Headers` instance (Next.js, Hono, Workers, Deno).
+ */
+export type WebhookHeadersInput =
+  | WebhookHeaders
+  | Headers
+  | Record<string, string | string[] | undefined>;
+
+/** The raw request body: a string, or the bytes of it (e.g. `express.raw()`'s Buffer). */
+export type WebhookPayload = string | Uint8Array;
+
 const DEFAULT_TOLERANCE = 300; // 5 minutes
 
 /** Standard Webhooks Ed25519 public key prefix: `whpk_<base64 of the 32-byte key>`. */
@@ -68,11 +81,12 @@ export class Webhook {
    * @throws {HookbaseWebhookVerificationError} If verification fails
    */
   verify<T = Record<string, unknown>>(
-    payload: string,
-    headers: WebhookHeaders | Record<string, string>,
+    payload: WebhookPayload,
+    headers: WebhookHeadersInput,
     options: VerifyOptions = {}
   ): T {
     const { tolerance = DEFAULT_TOLERANCE } = options;
+    const body = payloadToString(payload);
 
     // Normalize headers (case-insensitive)
     const normalizedHeaders = normalizeHeaders(headers);
@@ -101,11 +115,11 @@ export class Webhook {
     this.verifyTimestamp(webhookTimestamp, tolerance);
 
     // Verify signature
-    this.verifySignature(payload, webhookId, webhookTimestamp, webhookSignature);
+    this.verifySignature(body, webhookId, webhookTimestamp, webhookSignature);
 
     // Parse and return payload
     try {
-      return JSON.parse(payload) as T;
+      return JSON.parse(body) as T;
     } catch {
       throw new HookbaseWebhookVerificationError('Invalid JSON payload');
     }
@@ -121,13 +135,13 @@ export class Webhook {
    * @throws {HookbaseWebhookVerificationError} If verification fails
    */
   verifySignature(
-    payload: string,
+    payload: WebhookPayload,
     webhookId: string,
     webhookTimestamp: string,
     webhookSignature: string
   ): boolean {
     // Build the signed content
-    const signedContent = `${webhookId}.${webhookTimestamp}.${payload}`;
+    const signedContent = `${webhookId}.${webhookTimestamp}.${payloadToString(payload)}`;
 
     // Parse signatures (may have multiple versions)
     const signatures = parseSignatures(webhookSignature);
@@ -243,7 +257,8 @@ export class Webhook {
 
   private verifyTimestamp(timestamp: string, tolerance: number): void {
     const now = Math.floor(Date.now() / 1000);
-    const webhookTime = parseInt(timestamp, 10);
+    // Whole seconds only: parseInt read "1700000000abc" (or "1.7e9") as a valid timestamp.
+    const webhookTime = /^\d+$/.test(timestamp.trim()) ? parseInt(timestamp, 10) : NaN;
 
     if (isNaN(webhookTime)) {
       throw new HookbaseWebhookVerificationError('Invalid timestamp format');
@@ -341,16 +356,41 @@ function parseSignatures(signatureHeader: string): ParsedSignature[] {
   return signatures;
 }
 
-function normalizeHeaders(
-  headers: WebhookHeaders | Record<string, string>
-): Record<string, string> {
+function normalizeHeaders(headers: WebhookHeadersInput): Record<string, string> {
   const normalized: Record<string, string> = {};
 
-  for (const [key, value] of Object.entries(headers)) {
-    normalized[key.toLowerCase()] = value;
+  // A Fetch `Headers` keeps its entries internally: Object.entries() on one is empty, so every
+  // header read as missing.
+  if (isHeadersLike(headers)) {
+    headers.forEach((value, key) => {
+      normalized[key.toLowerCase()] = value;
+    });
+    return normalized;
+  }
+
+  for (const [key, value] of Object.entries(headers as Record<string, string | string[] | undefined>)) {
+    if (value === undefined) continue;
+    // Node joins repeated headers into an array; signatures may arrive split across them.
+    normalized[key.toLowerCase()] = Array.isArray(value) ? value.join(' ') : value;
   }
 
   return normalized;
+}
+
+/**
+ * A Fetch `Headers`, including one from another realm or a polyfill (node-fetch, a bundled
+ * fetch): those fail `instanceof Headers` but iterate with `forEach` just the same, and have no
+ * own enumerable entries for the plain-object path to find.
+ */
+function isHeadersLike(headers: WebhookHeadersInput): headers is Headers {
+  if (typeof Headers !== 'undefined' && headers instanceof Headers) return true;
+  const h = headers as { forEach?: unknown; get?: unknown };
+  return typeof h.forEach === 'function' && typeof h.get === 'function';
+}
+
+function payloadToString(payload: WebhookPayload): string {
+  if (typeof payload === 'string') return payload;
+  return Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength).toString('utf8');
 }
 
 function generateId(): string {

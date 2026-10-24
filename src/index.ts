@@ -3,6 +3,7 @@ export { Hookbase, createClient } from './client';
 
 // Webhook verification
 export { Webhook, createWebhook } from './webhooks/verify';
+export type { WebhookHeadersInput, WebhookPayload } from './webhooks/verify';
 
 // Error classes
 export {
@@ -69,6 +70,9 @@ export type {
   UpdateEndpointInput,
   ListEndpointsParams,
   EndpointStats,
+  RotateEndpointSecretParams,
+  TestEndpointParams,
+  EndpointTestResult,
   RotateEndpointSecretResult,
   RotateHmacEndpointSecretResult,
   RotateEd25519EndpointSecretResult,
@@ -82,6 +86,10 @@ export type {
 
   // Subscriptions (outbound)
   Subscription,
+  LabelFilterMode,
+  LabelFilters,
+  SubscriptionFilterOptions,
+  BulkSubscribeOptions,
   CreateSubscriptionInput,
   UpdateSubscriptionInput,
   ListSubscriptionsParams,
@@ -234,4 +242,13 @@ export type {
 } from './resources/cronJobs';
 
 // Tunnels — declared alongside TunnelsResource, like the cron job types above.
-export type { Tunnel, CreateTunnelInput } from './resources/tunnels';
+export type { Tunnel, CreatedTunnel, CreateTunnelInput } from './resources/tunnels';
+
+// API keys and analytics — declared alongside their resources, like the types above.
+export type { ApiKey, ApiKeyWithSecret, CreateApiKeyInput } from './resources/apiKeys';
+export type {
+  DashboardData,
+  DashboardParams,
+  AnalyticsOverview,
+  AnalyticsOverviewStats,
+} from './resources/analytics';

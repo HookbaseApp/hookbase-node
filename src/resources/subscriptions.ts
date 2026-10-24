@@ -3,6 +3,7 @@ import type {
   Subscription,
   CreateSubscriptionInput,
   UpdateSubscriptionInput,
+  BulkSubscribeOptions,
   ListSubscriptionsParams,
   CursorPaginatedResponse,
   ApiResponse,
@@ -60,10 +61,14 @@ export class SubscriptionsResource extends BaseResource {
   ): Promise<Subscription> {
     const response = await this.client.request<ApiResponse<Subscription>>(
       'GET',
-      `/api/webhook-subscriptions/${subscriptionId}`,
+      `/api/webhook-subscriptions/${encodeURIComponent(subscriptionId)}`,
       { requestOptions: options }
     );
-    return response.data;
+    const sub = response.data;
+    // `get` nests the event type; list items carry `eventTypeName` flat. Give both the flat name.
+    return sub.eventTypeName === undefined && sub.eventType?.name !== undefined
+      ? { ...sub, eventTypeName: sub.eventType.name }
+      : sub;
   }
 
   /**
@@ -93,7 +98,7 @@ export class SubscriptionsResource extends BaseResource {
   ): Promise<Subscription> {
     const response = await this.client.request<ApiResponse<Subscription>>(
       'PATCH',
-      `/api/webhook-subscriptions/${subscriptionId}`,
+      `/api/webhook-subscriptions/${encodeURIComponent(subscriptionId)}`,
       { body: data, requestOptions: options }
     );
     return response.data;
@@ -109,7 +114,7 @@ export class SubscriptionsResource extends BaseResource {
   ): Promise<void> {
     await this.client.request(
       'DELETE',
-      `/api/webhook-subscriptions/${subscriptionId}`,
+      `/api/webhook-subscriptions/${encodeURIComponent(subscriptionId)}`,
       { requestOptions: options }
     );
   }
@@ -143,7 +148,8 @@ export class SubscriptionsResource extends BaseResource {
     applicationId: string,
     endpointId: string,
     eventTypeIds: string[],
-    options?: RequestOptions
+    options?: RequestOptions,
+    bulkOptions?: BulkSubscribeOptions
   ): Promise<Subscription[]> {
     const response = await this.client.request<{
       created: number;
@@ -153,7 +159,7 @@ export class SubscriptionsResource extends BaseResource {
       'POST',
       '/api/webhook-subscriptions/bulk',
       {
-        body: { endpointId, eventTypeIds },
+        body: { ...bulkOptions, endpointId, eventTypeIds },
         requestOptions: options,
       }
     );
@@ -169,7 +175,8 @@ export class SubscriptionsResource extends BaseResource {
   async bulkSubscribe(
     endpointId: string,
     eventTypeIds: string[],
-    options?: RequestOptions
+    options?: RequestOptions,
+    bulkOptions?: BulkSubscribeOptions
   ): Promise<{ created: number; skipped: number; subscriptions: Subscription[] }> {
     const response = await this.client.request<{
       created: number;
@@ -179,7 +186,7 @@ export class SubscriptionsResource extends BaseResource {
       'POST',
       '/api/webhook-subscriptions/bulk',
       {
-        body: { endpointId, eventTypeIds },
+        body: { ...bulkOptions, endpointId, eventTypeIds },
         requestOptions: options,
       }
     );

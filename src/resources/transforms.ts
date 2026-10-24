@@ -7,6 +7,8 @@ import type {
   ListTransformsParams,
   TransformTestInput,
   TransformTestResult,
+  TransformType,
+  ContentFormat,
   PaginatedResponse,
   RequestOptions,
 } from '../types';
@@ -87,7 +89,19 @@ export class TransformsResource extends BaseResource {
       body: data,
       requestOptions: options,
     });
-    return response.transform;
+    // The create response is snake_case (transform_type, input_format, output_format); every
+    // other transform response is camelCase. Read both so `transformType` is never undefined.
+    const t = response.transform as Transform & {
+      transform_type?: TransformType;
+      input_format?: ContentFormat;
+      output_format?: ContentFormat;
+    };
+    return {
+      ...t,
+      transformType: t.transformType ?? t.transform_type ?? data.transformType,
+      inputFormat: t.inputFormat ?? t.input_format ?? data.inputFormat ?? 'json',
+      outputFormat: t.outputFormat ?? t.output_format ?? data.outputFormat ?? 'json',
+    };
   }
 
   /**

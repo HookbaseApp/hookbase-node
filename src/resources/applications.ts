@@ -57,7 +57,7 @@ export class ApplicationsResource extends BaseResource {
   async get(id: string, options?: RequestOptions): Promise<Application> {
     const response = await this.client.request<ApiResponse<Application>>(
       'GET',
-      `/api/webhook-applications/${id}`,
+      `/api/webhook-applications/${encodeURIComponent(id)}`,
       { requestOptions: options }
     );
     return withApplicationAliases(response.data);
@@ -106,7 +106,7 @@ export class ApplicationsResource extends BaseResource {
   ): Promise<Application> {
     const response = await this.client.request<ApiResponse<Application>>(
       'PATCH',
-      `/api/webhook-applications/${id}`,
+      `/api/webhook-applications/${encodeURIComponent(id)}`,
       { body: data, requestOptions: options }
     );
     return withApplicationAliases(response.data);
@@ -116,7 +116,7 @@ export class ApplicationsResource extends BaseResource {
    * Delete an application and all associated endpoints/subscriptions
    */
   async delete(id: string, options?: RequestOptions): Promise<void> {
-    await this.client.request('DELETE', `/api/webhook-applications/${id}`, {
+    await this.client.request('DELETE', `/api/webhook-applications/${encodeURIComponent(id)}`, {
       requestOptions: options,
     });
   }

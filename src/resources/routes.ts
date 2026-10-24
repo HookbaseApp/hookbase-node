@@ -1,5 +1,5 @@
 import { BaseResource, type ApiClient } from './base';
-import { importBody, withCircuitStatusAliases } from './wire';
+import { importBody, withCircuitStatusAliases, withParsedRoute } from './wire';
 import type {
   Route,
   CreateRouteInput,
@@ -36,7 +36,7 @@ export class RoutesResource extends BaseResource {
       requestOptions: options,
     });
     return {
-      data: response.routes,
+      data: (response.routes ?? []).map(withParsedRoute),
       total: response.pagination.total,
       limit: response.pagination.pageSize,
       offset: (response.pagination.page - 1) * response.pagination.pageSize,
@@ -73,7 +73,7 @@ export class RoutesResource extends BaseResource {
     }>('GET', `/api/routes/${encodeURIComponent(id)}`, {
       requestOptions: options,
     });
-    return response.route;
+    return withParsedRoute(response.route);
   }
 
   /**

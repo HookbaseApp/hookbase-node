@@ -184,8 +184,8 @@ export class MessagesResource extends BaseResource {
    * Replay an exhausted, DLQ or stalled failed outbound message. The replay is a NEW outbound
    * message: its id is `newMessageId` (also returned as `id`).
    *
-   * Not retried automatically on a timeout or 5xx unless you pass `idempotencyKey` or `retries`,
-   * since a replay that did go through would otherwise be delivered twice.
+   * Not retried automatically on a timeout or 5xx unless you pass `idempotencyKey`, since a
+   * replay that did go through would otherwise be delivered twice.
    */
   async retry(
     applicationId: string,

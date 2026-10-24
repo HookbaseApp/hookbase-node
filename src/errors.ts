@@ -141,9 +141,11 @@ export class HookbaseValidationError extends HookbaseApiError {
   constructor(
     message: string = 'Validation failed',
     requestId?: string,
-    validationErrors?: Record<string, string[]>
+    validationErrors?: Record<string, string[]>,
+    /** 400 or 422; a 422 used to be reported as 400. */
+    status: number = 400
   ) {
-    super(message, 400, 'validation_error', requestId, { validationErrors });
+    super(message, status, 'validation_error', requestId, { validationErrors });
     this.name = 'HookbaseValidationError';
     this.validationErrors = validationErrors;
     Object.setPrototypeOf(this, HookbaseValidationError.prototype);

@@ -49,7 +49,8 @@ export interface Application {
   id: string;
   name: string;
   organizationId: string;
-  externalId: string;
+  /** Your own id for this application; null when it was created without one. */
+  externalId: string | null;
   metadata: Record<string, unknown> | null;
 
   /** Null when unset. `null` and `0` are different answers, so this is not defaulted. */
@@ -76,25 +77,39 @@ export interface Application {
    * property was typed `string` while being `undefined` at runtime. Read `externalId`. The SDK
    * fills this in from `externalId` on every response so existing code keeps working.
    */
-  uid: string;
+  uid: string | null;
 
-  /** Set on create and get-or-create responses only; absent elsewhere. */
+  /** Present on list and get responses. */
+  endpointCount?: number;
+
+  /** The application's `send-event` URL. */
   sendEventUrl?: string;
 }
 
 export interface CreateApplicationInput {
   name: string;
+  /** Your own id for the application; sent as `externalId`. */
   uid?: string;
   metadata?: Record<string, unknown>;
+  rateLimitPerSecond?: number;
+  rateLimitPerMinute?: number;
+  rateLimitPerHour?: number;
 }
 
 export interface UpdateApplicationInput {
   name?: string;
   metadata?: Record<string, unknown>;
+  rateLimitPerSecond?: number | null;
+  rateLimitPerMinute?: number | null;
+  rateLimitPerHour?: number | null;
+  isDisabled?: boolean;
+  disabledReason?: string;
 }
 
 export interface ListApplicationsParams extends PaginationParams {
   search?: string;
+  isDisabled?: boolean;
+  order?: SortOrder;
 }
 
 // ============================================
@@ -375,6 +390,39 @@ export type RotateEndpointSecretResult =
   | RotateHmacEndpointSecretResult
   | RotateEd25519EndpointSecretResult;
 
+/** Options for `endpoints.rotateSecret`. */
+export interface RotateEndpointSecretParams {
+  /** How long the previous key keeps signing alongside the new one, 0-86400 seconds. The API defaults to 3600. */
+  gracePeriodSeconds?: number;
+}
+
+/** Options for `endpoints.test`. */
+export interface TestEndpointParams {
+  /** The event type to label the test with. */
+  eventType?: string;
+  /** The test payload; the API generates one when omitted. */
+  payload?: Record<string, unknown>;
+}
+
+/** What `endpoints.test` returns. */
+export interface EndpointTestResult {
+  success: boolean;
+  testEvent: { id: string; type: string; timestamp: string };
+  delivery: {
+    status: 'success' | 'failed';
+    responseStatus: number;
+    responseTimeMs: number;
+    /** First 1000 characters. */
+    responseBody: string;
+    errorMessage: string | null;
+    /** Provider-kind endpoints only. */
+    providerMessageId?: string | null;
+    /** Provider-kind endpoints only. */
+    errorCode?: string | null;
+  };
+  signature: { header: string; value: string; timestamp: number };
+}
+
 export interface EndpointStats {
   totalMessages: number;
   totalSuccesses: number;
@@ -462,23 +510,96 @@ export interface ListEventTypesParams extends PaginationParams {
 // Subscription Types
 // ============================================
 
+/** How `labelFilters` combine: every filter must match (`all`, the default) or any one (`any`). */
+export type LabelFilterMode = 'all' | 'any';
+
+/** Label filters: a label must equal the value, or one of the values in an array (max 20). */
+export type LabelFilters = Record<string, string | string[]>;
+
 export interface Subscription {
   id: string;
   endpointId: string;
   eventTypeId: string;
-  eventTypeName: string;
+  /**
+   * The event type's name. List items carry it directly; `get` returns it nested as
+   * `eventType.name` and the SDK copies it here. Create and update responses do not include it.
+   */
+  eventTypeName?: string;
+  /** List only. */
+  eventTypeDisplayName?: string | null;
   isEnabled: boolean;
+  /** JSONata expression evaluated on the payload; the event is delivered only when it is truthy. */
+  filterExpression?: string | null;
+  labelFilters?: LabelFilters | null;
+  labelFilterMode?: LabelFilterMode | null;
+  /** Transform applied to the payload before delivery. */
+  transformId?: string | null;
+  /** 0=Critical … 4=Bulk; overrides the event type's default priority. */
+  priorityOverride?: number | null;
+  /** `latest`, or the version label the subscription is pinned to. */
+  eventVersion?: string;
+  eventVersionDeprecated?: boolean;
+  eventVersionSunsetAt?: string | null;
+  createdBy?: string | null;
+  apiKeyId?: string | null;
+  /** List only. */
+  endpointUrl?: string;
+  /** List only. */
+  applicationId?: string;
+  /** List only. */
+  applicationName?: string;
+  /** Get only. */
+  endpoint?: { id: string; url: string };
+  /** Get only. */
+  eventType?: { id: string; name: string; displayName: string | null };
+  /** Get only. */
+  application?: { id: string; name: string };
   createdAt: string;
-  updatedAt: string;
+  /** @deprecated The API has never returned this; always undefined. */
+  updatedAt?: string;
 }
 
-export interface CreateSubscriptionInput {
+/** Filtering and routing options a subscription can carry. */
+export interface SubscriptionFilterOptions {
+  /** JSONata expression (max 1000 characters); validated by the API. */
+  filterExpression?: string;
+  /** Max 50 filters; keys max 64 characters, values max 256. */
+  labelFilters?: LabelFilters;
+  labelFilterMode?: LabelFilterMode;
+  /** A transform's UUID. */
+  transformId?: string;
+}
+
+export interface CreateSubscriptionInput extends SubscriptionFilterOptions {
   endpointId: string;
   eventTypeId: string;
+  /** The API defaults to true. */
+  isEnabled?: boolean;
+  /** 0=Critical, 1=High, 2=Normal, 3=Low, 4=Bulk. */
+  priorityOverride?: number | null;
+  /** `latest` (follow new versions) or a version label to pin. Omitted pins the current latest. */
+  eventVersion?: string;
 }
 
 export interface UpdateSubscriptionInput {
   isEnabled?: boolean;
+  /** Null clears it. */
+  filterExpression?: string | null;
+  /** Null clears it. */
+  labelFilters?: LabelFilters | null;
+  labelFilterMode?: LabelFilterMode | null;
+  /** Null clears it. */
+  transformId?: string | null;
+  /** Null resets to the event type's default. */
+  priorityOverride?: number | null;
+  /** `latest` or a version label. */
+  eventVersion?: string;
+}
+
+/** Options for `subscriptions.bulkSubscribe` / `subscribeToMany`, applied to every subscription created. */
+export interface BulkSubscribeOptions extends SubscriptionFilterOptions {
+  /** Only `latest` is accepted for a bulk subscribe (labels differ per event type). */
+  eventVersion?: 'latest';
 }
 
 export interface ListSubscriptionsParams extends PaginationParams {
@@ -611,6 +732,12 @@ export interface MessageAttempt {
 export interface SendMessageInput {
   eventType: string;
   payload: Record<string, unknown>;
+  /** Labels subscriptions can filter on (`labelFilters`). Max 20; values max 255 characters. */
+  labels?: Record<string, string>;
+  /** 0=Critical, 1=High, 2=Normal, 3=Low, 4=Bulk. Defaults to the event type's priority. */
+  priority?: number;
+  /** The event version the payload is in: `latest` (the default) or a version label. */
+  eventVersion?: string;
   /**
    * Deliver to these endpoints only (max 100) instead of every subscribed endpoint. Sent as
    * `endpointIds`, and also as `endpointId` when there is exactly one.
@@ -678,7 +805,9 @@ export interface ListOutboundMessagesParams extends PaginationParams {
   messageId?: string;
   status?: MessageStatus;
   eventType?: string;
+  /** @deprecated The message list does not filter by date; ignored by the API. `export` does take it. */
   startDate?: string;
+  /** @deprecated The message list does not filter by date; ignored by the API. `export` does take it. */
   endDate?: string;
 }
 
@@ -688,13 +817,23 @@ export interface ListOutboundMessagesParams extends PaginationParams {
 
 export interface PortalToken {
   id: string;
+  /** The application the token is for. The API omits it; the SDK fills it from the call's argument. */
   applicationId: string;
+  /** The plaintext token: on `create` only, shown once. */
   token?: string;
   tokenPrefix?: string;
   name?: string;
   scopes: string[];
   expiresAt: string;
   createdAt: string;
+  /** List only. */
+  lastUsedAt?: string | null;
+  /** List only. */
+  useCount?: number;
+  /** List only. */
+  revokedAt?: string | null;
+  apiKeyId?: string | null;
+  revokedByApiKeyId?: string | null;
   isExpired?: boolean;
   isRevoked?: boolean;
 }
@@ -1092,8 +1231,11 @@ export interface ListCatalogProvidersParams {
 export interface ListSourcesParams {
   page?: number;
   pageSize?: number;
+  /** @deprecated The API does not filter on this; it is ignored and the full list comes back. */
   search?: string;
+  /** @deprecated The API does not filter on this; it is ignored and the full list comes back. */
   provider?: SourceProvider;
+  /** @deprecated The API does not filter on this; it is ignored and the full list comes back. */
   isActive?: boolean;
 }
 
@@ -1103,7 +1245,17 @@ export interface ListSourcesParams {
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 export type AuthType = 'none' | 'basic' | 'bearer' | 'api_key' | 'custom_header';
-export type DestinationType = 'http' | 's3' | 'r2' | 'gcs' | 'azure_blob';
+export type DestinationType =
+  | 'http'
+  | 's3'
+  | 'r2'
+  | 'gcs'
+  | 'azure_blob'
+  | 'sqs'
+  | 'eventbridge'
+  | 'servicebus'
+  | 'pubsub'
+  | 'oci_queue';
 
 export interface S3Config {
   bucket: string;
@@ -1221,7 +1373,8 @@ export interface CreateDestinationInput {
   /** Sent as a record — this is the shape the destinations API takes, unlike endpoint headers. */
   headers?: Record<string, string>;
   authType?: AuthType;
-  authConfig?: Record<string, unknown>;
+  /** Credentials for `authType`; every value is a string (the API rejects others). */
+  authConfig?: Record<string, string>;
   /** Request timeout in milliseconds, 1000-60000. The API defaults to 30000. */
   timeoutMs?: number;
   throttle?: {
@@ -1259,7 +1412,8 @@ export interface UpdateDestinationInput {
   /** Sent as a record — this is the shape the destinations API takes, unlike endpoint headers. */
   headers?: Record<string, string>;
   authType?: AuthType;
-  authConfig?: Record<string, unknown>;
+  /** Credentials for `authType`; every value is a string (the API rejects others). */
+  authConfig?: Record<string, string>;
   /** Request timeout in milliseconds, 1000-60000. */
   timeoutMs?: number;
   throttle?: {
@@ -1294,7 +1448,9 @@ export interface UpdateDestinationInput {
 export interface ListDestinationsParams {
   page?: number;
   pageSize?: number;
+  /** @deprecated The API does not filter on this; it is ignored and the full list comes back. */
   search?: string;
+  /** @deprecated The API does not filter on this; it is ignored and the full list comes back. */
   isActive?: boolean;
 }
 
@@ -1354,7 +1510,17 @@ export interface Route {
   failureThreshold: number | null;
   failoverDestinationIds: string[] | null;
   failoverAfterAttempts: number | null;
-  expectedResponse: string | null;
+  /** Parsed by the API, so any JSON value. */
+  expectedResponse: unknown;
+  consecutiveFailures?: number;
+  circuitProbeAttempts?: number;
+  sourceName?: string | null;
+  sourceSlug?: string | null;
+  destinationName?: string | null;
+  destinationSlug?: string | null;
+  transformName?: string | null;
+  filterName?: string | null;
+  schemaName?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -1404,8 +1570,11 @@ export interface UpdateRouteInput {
 export interface ListRoutesParams {
   page?: number;
   pageSize?: number;
+  /** @deprecated The API does not filter on this; it is ignored and the full list comes back. */
   sourceId?: string;
+  /** @deprecated The API does not filter on this; it is ignored and the full list comes back. */
   destinationId?: string;
+  /** @deprecated The API does not filter on this; it is ignored and the full list comes back. */
   isActive?: boolean;
 }
 
@@ -1510,18 +1679,43 @@ export interface EventDetail {
   deliveries: Delivery[];
 }
 
+/** `GET /events/:id/debug`: everything needed to reproduce and diagnose one inbound event. */
 export interface EventDebugInfo {
   event: {
     id: string;
     sourceId: string;
+    sourceName: string | null;
+    sourceSlug: string | null;
+    provider: string | null;
     eventType: string | null;
-    headers: Record<string, string>;
-    payload: unknown;
-    signatureValid: number | null;
-    receivedAt: string;
+    payloadHash: string | null;
     ipAddress: string | null;
+    signatureValid: boolean | null;
+    receivedAt: string;
+    /** `unsigned` when the sender attached no signature at all (as opposed to a wrong one). */
+    signatureIssue: 'unsigned' | null;
+    /** @deprecated Never sent here; read `request.headers`. */
+    headers?: Record<string, string>;
+    /** @deprecated Never sent here; read the top-level `payload`. */
+    payload?: unknown;
   };
-  curlCommand: string;
+  request: { headers: Record<string, string>; payloadSize: number; contentType: string };
+  /** The parsed payload, or null once retention removed it. */
+  payload: unknown;
+  /** True for a transient (not stored) event. */
+  transient: boolean;
+  /** The raw body, truncated to 10,000 characters. */
+  rawPayload: string;
+  deliveries: Array<Record<string, unknown>>;
+  timing: Record<string, unknown>;
+  filterEvaluations: unknown[];
+  recentConfigChanges: { sinceDays: number; entries: unknown[] };
+  debug: { curlCommand: string | null };
+  /**
+   * A curl command that replays the request against the ingest URL; null for transient events.
+   * The API nests it as `debug.curlCommand`; the SDK copies it here.
+   */
+  curlCommand: string | null;
 }
 
 export interface ListEventsParams {
@@ -1662,8 +1856,13 @@ export interface BulkReplayResult {
 // Transform Types (Inbound)
 // ============================================
 
-export type TransformType = 'jsonata' | 'javascript' | 'mapping';
-export type ContentFormat = 'json' | 'xml' | 'form' | 'text';
+/**
+ * The transform engines the API runs (api/src/transforms/validation.ts). `mapping` was never one:
+ * the API rejects it with a 400.
+ */
+export type TransformType = 'jsonata' | 'xslt' | 'liquid' | 'javascript';
+/** Payload formats a transform reads and writes. `form` was never accepted (400). */
+export type ContentFormat = 'json' | 'xml' | 'text';
 
 export interface Transform {
   id: string;
@@ -1675,7 +1874,10 @@ export interface Transform {
   code: string;
   inputFormat: ContentFormat;
   outputFormat: ContentFormat;
-  version: number;
+  isActive?: boolean;
+  /** @deprecated The API has never returned a version; always undefined. */
+  version?: number;
+  /** Absent on the create response. */
   createdAt: string;
   updatedAt: string;
 }
@@ -1693,6 +1895,7 @@ export interface CreateTransformInput {
 export interface UpdateTransformInput {
   name?: string;
   description?: string;
+  isActive?: boolean;
   transformType?: TransformType;
   code?: string;
   inputFormat?: ContentFormat;
@@ -1794,8 +1997,11 @@ export interface Schema {
   name: string;
   slug: string;
   description: string | null;
-  jsonSchema: string;
-  version: number;
+  /** The JSON Schema, parsed (the list endpoint sends it as a string; the SDK parses it). */
+  jsonSchema: Record<string, unknown> | null;
+  /** @deprecated The API has never returned a version; always undefined. */
+  version?: number;
+  /** @deprecated The API has never returned the routes using a schema; always undefined. */
   routes?: Array<{ id: string; name: string }>;
   createdAt: string;
   updatedAt: string;
@@ -1821,7 +2027,10 @@ export interface ListSchemasParams {
 
 export interface SchemaValidationResult {
   valid: boolean;
-  errors: string[];
+  /** One entry per violation; `path` is the JSON path (`root` for the root). */
+  errors: Array<{ path: string; message: string }>;
+  /** The payload that was validated, echoed back. */
+  payload?: unknown;
 }
 
 // ============================================
@@ -1923,7 +2132,7 @@ export interface DlqBulkRetryResult {
 }
 
 export interface DlqBulkDeleteResult {
-  /** How many ids were submitted for deletion. */
+  /** How many of the ids were in the DLQ and were removed. Unknown ids are not counted. */
   deleted: number;
   /** @deprecated The API does not send this; the SDK mirrors `deleted` here. */
   total: number;
