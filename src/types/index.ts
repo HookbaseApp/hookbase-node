@@ -1764,13 +1764,16 @@ export interface ExportEventsParams {
 /**
  * `success` and `retrying` were never values the API sends — a delivered delivery is
  * `delivered`, and one waiting on a retry is `pending` with an `attemptCount` above zero.
+ * The set is the `deliveries.status` CHECK constraint (api/migrations/pg/0046_throttling.sql);
+ * `circuit_open` is a route notification type, not a delivery status.
  */
 export type DeliveryStatus =
   | 'pending'
   | 'delivered'
   | 'failed'
+  | 'failed_over'
+  | 'schema_failed'
   | 'throttled'
-  | 'circuit_open'
   | (string & {});
 
 export interface Delivery {
