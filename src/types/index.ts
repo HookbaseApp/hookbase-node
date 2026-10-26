@@ -1857,10 +1857,19 @@ export interface BulkReplayResult {
 // ============================================
 
 /**
- * The transform engines the API runs (api/src/transforms/validation.ts). `mapping` was never one:
- * the API rejects it with a 400.
+ * The transform engines the API runs (api/src/transforms/catalog.ts). `mapping` was never one:
+ * the API rejects it with a 400. `jq` needs transform isolation on the server; without it the API
+ * answers `TRANSFORM_ENGINE_UNAVAILABLE`. Call `transforms.engines()` to see what a deployment offers.
  */
-export type TransformType = 'jsonata' | 'xslt' | 'liquid' | 'javascript';
+export type TransformType =
+  | 'jsonata'
+  | 'javascript'
+  | 'typescript'
+  | 'liquid'
+  | 'xslt'
+  | 'jmespath'
+  | 'jsonlogic'
+  | 'jq';
 /** Payload formats a transform reads and writes. `form` was never accepted (400). */
 export type ContentFormat = 'json' | 'xml' | 'text';
 
@@ -1913,6 +1922,27 @@ export interface TransformTestInput {
   inputFormat?: ContentFormat;
   outputFormat?: ContentFormat;
   payload: unknown;
+}
+
+/** One transform language, from `GET /transforms/engines`. */
+export interface TransformEngine {
+  type: TransformType;
+  label: string;
+  description: string;
+  /** File extension editors use for this language, without the dot. */
+  fileExtension: string;
+  /** A minimal working transform. */
+  starterCode: string;
+  /** Whether `POST /transforms/generate` supports this language. */
+  aiGenerate: boolean;
+  /** False when this deployment cannot run the language (e.g. jq without transform isolation). */
+  available: boolean;
+}
+
+/** `GET /transforms/engines`. */
+export interface TransformEnginesResponse {
+  engines: TransformEngine[];
+  contentFormats: ContentFormat[];
 }
 
 /**
