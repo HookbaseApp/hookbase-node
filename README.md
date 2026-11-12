@@ -257,6 +257,8 @@ const result = await hookbase.messages.send('app_123', {
   metadata: { source: 'checkout' },
 });
 console.log(`Event ${result.eventId} queued for ${result.messagesQueued} endpoint(s)`);
+// Of those, how many were created `held` because their endpoint's circuit is open (absent if none)
+if (result.messagesHeld) console.log(`${result.messagesHeld} held until their endpoint recovers`);
 
 // Deliver to specific endpoints only
 await hookbase.messages.send('app_123', {
@@ -335,6 +337,97 @@ await hookbase.sources.rotateSecret('src_123');
 
 // sourceId filters take an id or a slug; an unknown one is a 404, not an empty list
 await hookbase.events.list({ sourceId: 'stripe' });
+
+// Record the catalog entry a source is made from (create only). For vendors saved as custom-hmac,
+// it stops the vendor's shared IP ranges counting as a verified sender for bridge destinations.
+await hookbase.sources.create({
+  name: 'Plaid',
+  slug: 'plaid',
+  provider: 'custom-hmac',
+  catalogProvider: 'plaid',
+});
+```
+
+### Destinations (inbound)
+
+Every `http` destination signs its deliveries with a `whsec_` secret (Standard Webhooks headers), so
+the receiver can check they came from Hookbase. `create()` returns the secret once; see
+[Verifying deliveries at a destination](#verifying-deliveries-at-a-destination).
+
+```typescript
+const destination = await hookbase.destinations.create({
+  name: 'Orders service',
+  url: 'https://orders.example.com/hookbase',
+});
+console.log(destination.signingSecret); // whsec_..., shown once
+
+// Show it again, or rotate it (both need a key with write scope)
+const { signingSecret } = await hookbase.destinations.revealSecret(destination.id);
+// For gracePeriodSeconds (default 3600) deliveries carry signatures from both secrets
+const rotated = await hookbase.destinations.rotateSecret(destination.id, { gracePeriodSeconds: 600 });
+console.log(rotated.signingSecret, rotated.previousSecretExpiresAt);
+```
+
+A **bridge** destination publishes each delivery as an outbound event, to the endpoints subscribed to
+that event type. By default it publishes only events whose source verified the sender
+(`allowUnverifiedSources` overrides that), and creating or changing one also needs the
+`events:send` permission. Its test is a dry run: it resolves the event type from a sample payload and
+counts the subscribed endpoints, without publishing anything.
+
+```typescript
+const bridge = await hookbase.destinations.create({
+  name: 'Stripe to customers',
+  type: 'bridge',
+  config: {
+    eventTypeSource: 'field', // or 'fixed', with eventType: 'billing.invoice.paid'
+    eventTypeField: 'type', // a dot path into the payload
+    eventTypePrefix: 'stripe.', // invoice.paid -> stripe.invoice.paid
+  },
+});
+
+const check = await hookbase.destinations.test(bridge.id, { payload: { type: 'invoice.paid' } });
+if (check.dryRun) {
+  console.log(check.eventType, check.eventTypeExists, check.matchingEndpoints);
+}
+```
+
+The outbound messages a bridge sends point back to where they came from:
+`(await hookbase.messages.get(appId, messageId)).bridge` is `{ inboundEventId, deliveryId, hop }`.
+
+### Deliveries (inbound)
+
+```typescript
+// Replay a delivery as it was
+await hookbase.deliveries.replay('del_123');
+
+// Replay it with changes. payloadPatch is a JSON merge patch on the stored payload (null removes a
+// key), and the one to use on a source that masks or encrypts fields; modifiedPayload replaces the
+// payload outright. Pass one or the other.
+const replay = await hookbase.deliveries.replayWithEdit('del_123', {
+  payloadPatch: { data: { amount: 1000 }, debug: null },
+  destinationOverride: 'staging-orders', // id or slug
+  headersOverride: { 'X-Replayed-By': 'support' },
+});
+console.log(replay.deliveryId, replay.modified, replay.targetDestinationId);
+```
+
+### Holds while a circuit is open
+
+When a route's or an endpoint's circuit breaker opens, its deliveries and messages wait as `held`
+instead of spending attempts against a target that is down. They go out once it recovers; one still
+held when its retry window ends (`holdExpiresAt`) is dead-lettered. Holding is on by default (for
+routes, on plans with the circuit breaker).
+
+```typescript
+// Opt a route (or an endpoint) out
+await hookbase.routes.update('route_123', { holdOnCircuitOpen: false });
+
+// How many are waiting (counted up to 10,000)
+const route = await hookbase.routes.get('route_123');
+console.log(route.heldCount, route.heldCountCapped);
+
+const { data: held } = await hookbase.deliveries.list({ status: 'held' });
+held.forEach((d) => console.log(d.id, d.holdExpiresAt));
 ```
 
 ## Webhook Verification
@@ -385,6 +478,28 @@ const payload = webhook.verify(rawBody, headers);
 
 A `whsec_` secret verifies only `v1` signatures and a `whpk_` key only `v1a`; a mismatch fails with an
 error that names the scheme the endpoint actually uses.
+
+### Verifying deliveries at a destination
+
+Inbound deliveries to an `http` destination are signed the same way, with the destination's `whsec_`
+secret (from `destinations.create()` once, or `destinations.revealSecret()`). Verify them with the
+same verifier:
+
+```typescript
+import { createWebhook } from '@hookbase/sdk';
+
+const webhook = createWebhook(process.env.HOOKBASE_DESTINATION_SECRET!); // the destination's whsec_
+
+app.post('/hookbase', express.raw({ type: '*/*' }), (req, res) => {
+  const payload = webhook.verify(req.body, req.headers); // throws if the signature doesn't match
+  // webhook-id is the delivery id: the same on every retry of a delivery, so you can dedupe on it
+  res.sendStatus(200);
+});
+```
+
+During a rotation's grace period the `webhook-signature` header carries an entry for each secret, and
+either one verifies. `verify()` also parses the body as JSON; when a route's transform sends XML or
+text, check the signature with `verifySignature(body, id, timestamp, signature)` instead.
 
 ### Testing Webhooks
 
@@ -487,6 +602,52 @@ import type {
   HookbaseClientOptions,
 } from '@hookbase/sdk';
 ```
+
+## Upgrading to 4.2
+
+New in 4.2:
+
+- Destination signing secrets: `destinations.create()` returns `signingSecret` once
+  (`DestinationWithSecret`), plus `destinations.revealSecret()`, `destinations.rotateSecret()` and
+  `Destination.hasSigningSecret`.
+- Bridge destinations: `type: 'bridge'` with a `BridgeConfig`, `destinations.test(id, { payload })`
+  for the dry run, and `OutboundMessage.bridge` (plus `traceId`, `eventVersion` and
+  `deliveredEventVersion`) on `messages.get()`.
+- Holds while a circuit is open: the `held` status on deliveries and outbound messages,
+  `holdExpiresAt`, `holdOnCircuitOpen` on routes and endpoints, `heldCount`/`heldCountCapped` on
+  `routes.get()`/`endpoints.get()`, `messagesHeld` on `messages.send()` and `held` in
+  `messages.getStatsSummary()`.
+- `deliveries.replayWithEdit()`.
+- `Source.catalogProvider`, set on create only.
+- `events.debug()` deliveries are typed (`EventDebugDelivery`), including `patternHints` and
+  `routeCircuit`.
+- `DeliveryStatus` lists `awaiting_retry`, `held`, `failed_over` and `schema_failed`, and no longer
+  `circuit_open`, which was never a delivery status. `MessageStatus` lists `awaiting_pull`,
+  `fifo_waiting` and `held`.
+- `TransformType` adds `typescript`, `jmespath`, `jsonlogic` and `jq`, and `transforms.engines()`
+  lists what a deployment can run.
+
+Type changes that may need small edits in strict TypeScript code:
+
+- `Destination.config` is `WarehouseConfig | BridgeConfig | null`. Reading a field the warehouse
+  configs share (`destination.config?.prefix`) without narrowing no longer compiles: narrow first
+  (`'bucket' in config`) or cast to the config type you expect.
+- `DestinationTestResult` is a union of the test-request result and the bridge dry run. Existing
+  property reads still compile; check `result.dryRun` to tell them apart.
+- New required properties (`Destination.hasSigningSecret`, `Route.holdOnCircuitOpen`,
+  `Endpoint.holdOnCircuitOpen`, `Source.catalogProvider`, `Delivery.holdExpiresAt`,
+  `OutboundMessage.holdExpiresAt`, `OutboundStatsSummary.held`) need adding where your code builds
+  these objects itself, such as test fixtures.
+
+Behaviour changes:
+
+- `messages.send()` returns every field the API sends. It used to drop `messagesHeld` and
+  `eventVersion`. The deprecated `outboundMessages[].status` was always `pending`; it is now `held`
+  when every message was held, and `unknown` when only some were (the response doesn't say which).
+- Sources' `ipAllowlist`, `ipDenylist`, `encryptFields` and `maskFields` now arrive as arrays from
+  `sources.get()`, `list()` and `export()`, as the types always said. The API used to send them as
+  JSON strings: remove any `JSON.parse()` of these fields.
+- `deliveries.list({ status: 'pending' })` also returns `awaiting_retry` and `held` deliveries.
 
 ## Upgrading to 4.1
 

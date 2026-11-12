@@ -197,6 +197,8 @@ export type {
   ListTransformsParams,
   TransformTestInput,
   TransformTestResult,
+  TransformEngine,
+  TransformEnginesResponse,
 
   // Filters (inbound)
   FilterCondition,
