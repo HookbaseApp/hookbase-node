@@ -173,6 +173,8 @@ export type {
   InboundEvent,
   EventDetail,
   EventDebugInfo,
+  EventDebugDelivery,
+  FailurePatternHint,
   ListEventsParams,
   ExportEventsParams,
 
@@ -182,6 +184,8 @@ export type {
   DeliveryDetail,
   ListDeliveriesParams,
   ReplayResult,
+  ReplayWithEditInput,
+  ReplayTransformOverride,
   BulkReplayResult,
 
   // Transforms (inbound)

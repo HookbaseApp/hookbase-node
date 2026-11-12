@@ -1,3 +1,4 @@
+import { HookbaseError } from '../errors';
 import { BaseResource, type ApiClient } from './base';
 import { withDeliveryAliases, withDeliveryDetailAliases } from './wire';
 import type {
@@ -5,6 +6,7 @@ import type {
   DeliveryDetail,
   ListDeliveriesParams,
   ReplayResult,
+  ReplayWithEditInput,
   BulkReplayResult,
   PaginatedResponse,
   RequestOptions,
@@ -93,6 +95,34 @@ export class DeliveriesResource extends BaseResource {
       'POST',
       `/api/deliveries/${encodeURIComponent(deliveryId)}/replay`,
       { requestOptions: options }
+    );
+  }
+
+  /**
+   * Replay a delivery with changes: an edited payload (`modifiedPayload`, or a merge patch on the
+   * stored payload with `payloadPatch`), another destination, a one-shot transform, or extra
+   * headers. The replay is a new delivery; the original is left as it was.
+   *
+   * Not retried on a timeout or 5xx: a replay that did go through and is then repeated is
+   * delivered twice.
+   *
+   * @throws HookbaseError, before any request, if both `modifiedPayload` and `payloadPatch` are set.
+   */
+  async replayWithEdit(
+    deliveryId: string,
+    input: ReplayWithEditInput,
+    options?: RequestOptions
+  ): Promise<ReplayResult> {
+    if (input.modifiedPayload !== undefined && input.payloadPatch !== undefined) {
+      throw new HookbaseError(
+        'Pass either modifiedPayload or payloadPatch to replayWithEdit, not both: modifiedPayload ' +
+          'replaces the stored payload, payloadPatch edits it.'
+      );
+    }
+    return this.client.request<ReplayResult>(
+      'POST',
+      `/api/deliveries/${encodeURIComponent(deliveryId)}/replay`,
+      { body: input, requestOptions: options }
     );
   }
 

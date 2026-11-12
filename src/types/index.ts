@@ -1899,6 +1899,67 @@ export interface EventDetail {
   deliveries: Delivery[];
 }
 
+/** A known failure pattern a failed delivery matched (`EventDebugDelivery.patternHints`). */
+export interface FailurePatternHint {
+  id: string;
+  category: string;
+  title: string;
+  /** What probably went wrong. */
+  hypothesis: string;
+  suggestedFix: string;
+}
+
+/** One of an event's deliveries, as `events.debug()` returns it. */
+export interface EventDebugDelivery {
+  id: string;
+  status: DeliveryStatus;
+  /** HTTP status the destination answered with, or null. */
+  statusCode: number | null;
+  durationMs: number | null;
+  /** Attempts made so far. */
+  attempt: number | null;
+  maxAttempts: number | null;
+  /** When the next retry is scheduled; null when none is, and while the delivery is `held`. */
+  nextRetryAt: string | null;
+  /**
+   * When a `held` delivery's hold ends. It is released as soon as the route's circuit recovers;
+   * one still held at this time is dead-lettered. Null for every other status.
+   */
+  holdExpiresAt: string | null;
+  error: string | null;
+  responseBody: string | null;
+  responseHeaders: Record<string, string>;
+  /** The payload after the route's transform, or null. */
+  transformedPayload: unknown;
+  routeId: string;
+  destinationId: string;
+  destination: { name: string | null; url: string | null; method: string | null };
+  startedAt: string;
+  completedAt: string | null;
+  /** 0 for the route's own destination, 1+ for its failovers in order. */
+  failoverIndex: number;
+  /** For a failover or replay delivery, the delivery it came from. */
+  parentDeliveryId: string | null;
+  /** Groups deliveries that failed the same way. */
+  fingerprint: string | null;
+  /** The destination's `Retry-After` response header, if it sent one. */
+  retryAfter: string | null;
+  /** How many deliveries share `fingerprint`, or null without one. */
+  clusterCount: number | null;
+  /** Known failure patterns a failed, retrying or held delivery matched. */
+  patternHints: FailurePatternHint[];
+  /** The route's circuit breaker as it is now; null if the route has been deleted. */
+  routeCircuit: {
+    state: CircuitStatus;
+    openedAt: string | null;
+    cooldownSeconds: number;
+    failureThreshold: number;
+    consecutiveFailures: number;
+  } | null;
+  /** Fields the API adds later still reach you; this also keeps `Record`-style reads compiling. */
+  [key: string]: unknown;
+}
+
 /** `GET /events/:id/debug`: everything needed to reproduce and diagnose one inbound event. */
 export interface EventDebugInfo {
   event: {
@@ -1926,7 +1987,7 @@ export interface EventDebugInfo {
   transient: boolean;
   /** The raw body, truncated to 10,000 characters. */
   rawPayload: string;
-  deliveries: Array<Record<string, unknown>>;
+  deliveries: EventDebugDelivery[];
   timing: Record<string, unknown>;
   filterEvaluations: unknown[];
   recentConfigChanges: { sinceDays: number; entries: unknown[] };
@@ -2077,8 +2138,74 @@ export interface ListDeliveriesParams {
 }
 
 export interface ReplayResult {
+  /** The NEW delivery carrying the replay. */
   deliveryId: string;
   message: string;
+  /** True when the payload was edited (`modifiedPayload` or `payloadPatch`). */
+  modified?: boolean;
+  /** True when the replay went to `destinationOverride` instead of the original destination. */
+  destinationOverridden?: boolean;
+  /** True when the replay ran `transformOverride` instead of the route's transform. */
+  transformOverridden?: boolean;
+  /** True when `persistTransform` saved the override as the route's transform. */
+  transformPersisted?: boolean;
+  /** True when `headersOverride` was applied. */
+  headersOverridden?: boolean;
+  /** The destination the replay is going to. */
+  targetDestinationId?: string;
+}
+
+/**
+ * Body for `deliveries.replayWithEdit`: replay one delivery with changes. Every field is optional,
+ * and an empty input replays the delivery as it was.
+ *
+ * A replay into a bridge destination with a destination override or an edited payload or
+ * transform also needs the `events:send` permission.
+ */
+export interface ReplayWithEditInput {
+  /**
+   * Replace the stored payload with this one. Exclusive with `payloadPatch`. Don't use it on a
+   * source that masks or encrypts fields: you only see the masked view, so a full replacement
+   * would send the placeholders on. Use `payloadPatch` there.
+   */
+  modifiedPayload?: unknown;
+  /**
+   * An RFC 7386 JSON merge patch applied to the STORED payload: keys you set are added or replaced
+   * (objects merge recursively), keys set to null are removed. Must be an object, the stored payload
+   * must be a JSON object, and the patch may not change or remove an encrypted field. Exclusive
+   * with `modifiedPayload`.
+   */
+  payloadPatch?: Record<string, unknown>;
+  /** Send the replay to this destination (id or slug, in the same organization) instead. */
+  destinationOverride?: string;
+  /**
+   * Run this transform for the replay instead of the route's. Not saved unless `persistTransform`
+   * is set. Checked like creating a transform (plan, type, formats, compile).
+   */
+  transformOverride?: ReplayTransformOverride;
+  /**
+   * Headers to add or replace on this delivery only, max 50. The framing headers, the signature
+   * headers (`webhook-*`, `x-hookbase-id`, `-timestamp`, `-signature`) and `x-hookbase-hop` are
+   * refused (400).
+   */
+  headersOverride?: Record<string, string>;
+  /**
+   * With `transformOverride`, also save it as the route's transform. The route must already have
+   * one, and the caller needs the `transforms:update` permission.
+   */
+  persistTransform?: boolean;
+}
+
+/** A one-shot transform for `ReplayWithEditInput.transformOverride`. */
+export interface ReplayTransformOverride {
+  code: string;
+  /**
+   * The transform language. Omitted, the route's own transform type is used, and the code is not
+   * compiled before the replay is queued.
+   */
+  type?: TransformType;
+  inputFormat?: ContentFormat;
+  outputFormat?: ContentFormat;
 }
 
 export interface BulkReplayResult {
