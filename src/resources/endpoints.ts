@@ -1,4 +1,4 @@
-import { BaseResource, type ApiClient } from './base';
+import { BaseResource, splitParams, type ApiClient } from './base';
 import { endpointRequestBody, withEndpointAliases } from './wire';
 import type {
   Endpoint,
@@ -259,20 +259,4 @@ export class EndpointsResource extends BaseResource {
       { body: params, requestOptions: options }
     );
   }
-}
-
-/**
- * Tell a params object from RequestOptions in the optional third argument (the two have no keys
- * in common), so methods that gained params keep accepting `(appId, id, options)`.
- */
-function splitParams<P extends object>(
-  paramsOrOptions: P | RequestOptions | undefined,
-  maybeOptions: RequestOptions | undefined,
-  paramKeys: Array<keyof P>
-): [P | undefined, RequestOptions | undefined] {
-  if (maybeOptions !== undefined) return [paramsOrOptions as P | undefined, maybeOptions];
-  if (paramsOrOptions && paramKeys.some((k) => k in paramsOrOptions)) {
-    return [paramsOrOptions as P, undefined];
-  }
-  return [undefined, paramsOrOptions as RequestOptions | undefined];
 }

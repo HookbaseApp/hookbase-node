@@ -1,4 +1,4 @@
-import { BaseResource, type ApiClient } from './base';
+import { BaseResource, splitParams, type ApiClient } from './base';
 import {
   createDestinationBody,
   importBody,
@@ -7,6 +7,10 @@ import {
 } from './wire';
 import type {
   Destination,
+  DestinationWithSecret,
+  DestinationSigningSecret,
+  RotateDestinationSecretParams,
+  TestDestinationInput,
   CreateDestinationInput,
   UpdateDestinationInput,
   ListDestinationsParams,
@@ -80,19 +84,24 @@ export class DestinationsResource extends BaseResource {
   }
 
   /**
-   * Create a new destination
+   * Create a new destination.
+   *
+   * An `http` destination comes back with `signingSecret`, the `whsec_` secret its deliveries are
+   * signed with, in full this once (`revealSecret` shows it again). Null for other types.
    */
   async create(
     data: CreateDestinationInput,
     options?: RequestOptions
-  ): Promise<Destination> {
+  ): Promise<DestinationWithSecret> {
     const response = await this.client.request<{
-      destination: Destination;
+      destination: DestinationWithSecret;
     }>('POST', '/api/destinations', {
       body: createDestinationBody(data),
       requestOptions: options,
     });
-    return response.destination;
+    const destination = response.destination;
+    destination.signingSecret ??= null;
+    return destination;
   }
 
   /**
@@ -159,17 +168,84 @@ export class DestinationsResource extends BaseResource {
   }
 
   /**
-   * Test a destination by sending a test request
+   * Test a destination.
+   *
+   * An `http` destination gets a real signed test request, and a warehouse destination a test
+   * upload. A `bridge` destination's test is a dry run (`dryRun: true`): it resolves the event
+   * type from `input.payload` (or a built-in sample), checks the type exists and is enabled, and
+   * counts the subscribed endpoints, without publishing anything. Only a bridge reads `payload`.
    */
-  async test(id: string, options?: RequestOptions): Promise<DestinationTestResult> {
+  async test(id: string, options?: RequestOptions): Promise<DestinationTestResult>;
+  async test(
+    id: string,
+    input: TestDestinationInput,
+    options?: RequestOptions
+  ): Promise<DestinationTestResult>;
+  async test(
+    id: string,
+    inputOrOptions?: TestDestinationInput | RequestOptions,
+    maybeOptions?: RequestOptions
+  ): Promise<DestinationTestResult> {
+    const [input, options] = splitParams<TestDestinationInput>(inputOrOptions, maybeOptions, [
+      'payload',
+    ]);
     // The API answers with `status`/`latencyMs` (api/src/routes/destinations.ts). Those are now
     // returned under their own names; `statusCode`/`duration`, which this method used to rename
     // them to, are mirrored for existing callers. `error` is set on a failed test.
     const result = await this.client.request<DestinationTestResult>(
       'POST',
       `/api/destinations/${encodeURIComponent(id)}/test`,
-      { requestOptions: options }
+      { body: input, requestOptions: options }
     );
     return withDestinationTestAliases(result);
+  }
+
+  /**
+   * Show an `http` destination's signing secret. Needs a key with write scope. Any other type has
+   * no secret, and the API answers 400.
+   */
+  async revealSecret(id: string, options?: RequestOptions): Promise<DestinationSigningSecret> {
+    const result = await this.client.request<DestinationSigningSecret>(
+      'GET',
+      `/api/destinations/${encodeURIComponent(id)}/reveal-secret`,
+      { requestOptions: options }
+    );
+    result.previousSecretExpiresAt ??= null;
+    return result;
+  }
+
+  /**
+   * Issue a new signing secret for an `http` destination. Needs a key with write scope.
+   *
+   * Until `previousSecretExpiresAt` deliveries are signed with both the old and the new secret, so
+   * the receiver can switch over without rejecting any. Pass `{ gracePeriodSeconds }` (0-86400;
+   * the API defaults to 3600) to choose how long; 0 retires the old secret at once.
+   *
+   * Not retried on a timeout or 5xx: a rotation that did go through and is then repeated
+   * replaces the secret you were just handed.
+   */
+  async rotateSecret(id: string, options?: RequestOptions): Promise<DestinationSigningSecret>;
+  async rotateSecret(
+    id: string,
+    params: RotateDestinationSecretParams,
+    options?: RequestOptions
+  ): Promise<DestinationSigningSecret>;
+  async rotateSecret(
+    id: string,
+    paramsOrOptions?: RotateDestinationSecretParams | RequestOptions,
+    maybeOptions?: RequestOptions
+  ): Promise<DestinationSigningSecret> {
+    const [params, options] = splitParams<RotateDestinationSecretParams>(
+      paramsOrOptions,
+      maybeOptions,
+      ['gracePeriodSeconds']
+    );
+    const result = await this.client.request<DestinationSigningSecret>(
+      'POST',
+      `/api/destinations/${encodeURIComponent(id)}/rotate-secret`,
+      { body: params, requestOptions: options }
+    );
+    result.previousSecretExpiresAt ??= null;
+    return result;
   }
 }

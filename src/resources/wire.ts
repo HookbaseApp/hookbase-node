@@ -2,9 +2,11 @@ import { HookbaseError } from '../errors';
 import type { CreateApiKeyInput } from './apiKeys';
 import type {
   Application,
+  BridgeDryRunResult,
   CircuitStatusInfo,
   Delivery,
   DeliveryDetail,
+  DestinationDeliveryTestResult,
   DestinationTestResult,
   CreateDestinationInput,
   CreateEndpointInput,
@@ -423,10 +425,23 @@ export function withTransformTestAliases<T extends TransformTestResult>(result: 
   return result;
 }
 
-/** `POST /destinations/:id/test` sends `status`/`latencyMs`; the SDK returned `statusCode`/`duration`. */
+/**
+ * `POST /destinations/:id/test` sends `status`/`latencyMs`; the SDK returned `statusCode`/`duration`.
+ *
+ * A bridge's dry run has neither. When its stored config is invalid the API answers with only
+ * `success`, `dryRun` and `error`, so the dry-run fields are filled in to match the declared shape.
+ */
 export function withDestinationTestAliases<T extends DestinationTestResult>(result: T): T {
-  result.statusCode = result.status;
-  result.duration = result.latencyMs;
+  if (result.dryRun === true) {
+    const dryRun = result as BridgeDryRunResult;
+    dryRun.eventType ??= null;
+    dryRun.eventTypeExists ??= false;
+    dryRun.matchingEndpoints ??= 0;
+    return result;
+  }
+  const test = result as DestinationDeliveryTestResult;
+  test.statusCode = test.status;
+  test.duration = test.latencyMs;
   return result;
 }
 

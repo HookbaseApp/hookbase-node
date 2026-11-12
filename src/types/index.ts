@@ -710,6 +710,17 @@ export interface OutboundMessage {
   endpointDescription?: string | null;
   /** Get only. The stored payload, or null once retention has removed it. */
   payload?: unknown;
+  /** Get only. W3C trace id of the send this message belongs to. */
+  traceId?: string | null;
+  /** Get only. The version label the payload was published in; null for an unversioned event type. */
+  eventVersion?: string | null;
+  /** Get only. The version the latest attempt delivered, after conversion to the subscription's pin. */
+  deliveredEventVersion?: string | null;
+  /**
+   * Get only. The inbound event and delivery a bridge destination published this message's event
+   * from, or null when the event was not sent by a bridge.
+   */
+  bridge?: OutboundMessageBridge | null;
 
   /** @deprecated The API calls this `eventId`; the SDK mirrors it here. Read `eventId`. */
   messageId: string;
@@ -725,6 +736,16 @@ export interface OutboundMessage {
   deliveredAt: string | null;
   /** @deprecated The API has never sent this; always null. */
   updatedAt: string | null;
+}
+
+/** Where a bridge destination's outbound event came from (`OutboundMessage.bridge`). */
+export interface OutboundMessageBridge {
+  /** The inbound event the bridge published. */
+  inboundEventId: string;
+  /** The inbound delivery that published it; null if the API could not link it. */
+  deliveryId: string | null;
+  /** How many bridges the event has crossed, counting this one; null if not recorded. */
+  hop: number | null;
 }
 
 /** One delivery attempt, as `GET /outbound-messages/:id/attempts` returns it. */
@@ -1299,7 +1320,8 @@ export type DestinationType =
   | 'eventbridge'
   | 'servicebus'
   | 'pubsub'
-  | 'oci_queue';
+  | 'oci_queue'
+  | 'bridge';
 
 export interface S3Config {
   bucket: string;
@@ -1337,6 +1359,34 @@ export interface AzureBlobConfig {
 }
 
 export type WarehouseConfig = S3Config | R2Config | GCSConfig | AzureBlobConfig;
+
+/**
+ * A bridge destination's config (`type: 'bridge'`). A bridge publishes each delivery as an outbound
+ * event to the endpoints subscribed to its event type, instead of sending it to a URL.
+ *
+ * Each mode's fields are refused in the other mode, and any other key is refused (400).
+ */
+export interface BridgeConfig {
+  /** `fixed`: always publish `eventType`. `field`: publish the type named in each payload. */
+  eventTypeSource: 'fixed' | 'field';
+  /** Fixed mode, required: an existing, enabled outbound event type. */
+  eventType?: string;
+  /** Field mode, required: a dot path into the payload (max 5 segments, e.g. `data.type`). */
+  eventTypeField?: string;
+  /**
+   * Field mode, optional: put in front of the field's value (e.g. `stripe.`), max 50 characters,
+   * lowercase letters, digits and dots, starting with a letter.
+   */
+  eventTypePrefix?: string;
+  /** Publish to this application's endpoints only. Unset or null: every application's. */
+  applicationId?: string | null;
+  /**
+   * Also publish events whose sender the source did not verify (no valid signature with the
+   * source's own secret, and no IP allowlist that counts). Off by default; turning it on lets
+   * anyone who can reach the source URL publish to your endpoints.
+   */
+  allowUnverifiedSources?: boolean;
+}
 
 export interface FieldMapping {
   source: string;
@@ -1382,7 +1432,18 @@ export interface Destination {
   } | null;
   isActive: boolean;
   useStaticIp: boolean;
-  config: WarehouseConfig | null;
+  /**
+   * Whether the destination has a signing secret. Every `http` destination has one: each delivery
+   * is signed with it (Standard Webhooks headers), so the receiver can check it came from Hookbase.
+   * See `destinations.revealSecret()` and `rotateSecret()`.
+   */
+  hasSigningSecret: boolean;
+  /**
+   * A warehouse destination's config (credentials redacted) or a bridge's. Queue destinations
+   * (`sqs`, `eventbridge`, `servicebus`, `pubsub`, `oci_queue`) return their own shape here, also
+   * redacted; cast it.
+   */
+  config: WarehouseConfig | BridgeConfig | null;
   fieldMapping: FieldMapping[] | null;
   batchSize?: number;
   batchWindowSeconds?: number;
@@ -1400,6 +1461,43 @@ export interface Destination {
   updatedAt: string;
 }
 
+/** What `destinations.create` returns: the destination plus the one look at its signing secret. */
+export type DestinationWithSecret = Destination & {
+  /**
+   * The `whsec_` secret that signs this destination's deliveries, in full, this once
+   * (`revealSecret()` shows it again). Null for every type but `http`.
+   */
+  signingSecret: string | null;
+};
+
+/** What `destinations.revealSecret` and `destinations.rotateSecret` return. */
+export interface DestinationSigningSecret {
+  /** The current `whsec_` signing secret. */
+  signingSecret: string;
+  /**
+   * While a rotation's grace period lasts, deliveries are signed with both the previous and the
+   * current secret, and this is when the previous one stops. Null when there is no grace period.
+   */
+  previousSecretExpiresAt: string | null;
+}
+
+export interface RotateDestinationSecretParams {
+  /**
+   * Seconds the previous secret keeps signing alongside the new one, 0-86400. The API defaults to
+   * 3600; 0 retires it at once.
+   */
+  gracePeriodSeconds?: number;
+}
+
+/** Body for `destinations.test`. */
+export interface TestDestinationInput {
+  /**
+   * Bridge destinations only: the sample payload the dry run resolves the event type from. Must be
+   * a JSON object. Other destination types send their own test payload and ignore this.
+   */
+  payload?: Record<string, unknown>;
+}
+
 export interface CreateDestinationInput {
   name: string;
   /**
@@ -1411,7 +1509,7 @@ export interface CreateDestinationInput {
    */
   slug?: string;
   type?: DestinationType;
-  /** Required for `type: 'http'`; warehouse and queue destinations leave it unset. */
+  /** Required for `type: 'http'`; warehouse, queue and bridge destinations leave it unset. */
   url?: string;
   method?: HttpMethod;
   /** Sent as a record — this is the shape the destinations API takes, unlike endpoint headers. */
@@ -1428,7 +1526,11 @@ export interface CreateDestinationInput {
     maxConcurrency?: number;
     queueLimit?: number;
   };
-  config?: WarehouseConfig;
+  /**
+   * Warehouse, queue and bridge destinations: the type's config (`WarehouseConfig`, `BridgeConfig`,
+   * or a queue type's own fields).
+   */
+  config?: WarehouseConfig | BridgeConfig | Record<string, unknown>;
   fieldMapping?: FieldMapping[];
   useStaticIp?: boolean;
   batchSize?: number;
@@ -1468,7 +1570,11 @@ export interface UpdateDestinationInput {
     queueLimit?: number;
   };
   isActive?: boolean;
-  config?: WarehouseConfig;
+  /**
+   * Warehouse, queue and bridge destinations: the type's config (`WarehouseConfig`, `BridgeConfig`,
+   * or a queue type's own fields).
+   */
+  config?: WarehouseConfig | BridgeConfig | Record<string, unknown>;
   fieldMapping?: FieldMapping[];
   useStaticIp?: boolean;
   batchSize?: number;
@@ -1503,11 +1609,14 @@ export interface ListDestinationsParams {
 // ============================================
 
 /**
- * `POST /destinations/:id/test`. A failed test (network error, missing warehouse config) is still
- * a 200, with `success: false` and `error` set and no `status`.
+ * `POST /destinations/:id/test` for an HTTP, warehouse or queue destination: a real test request or
+ * upload. A failed test (network error, missing warehouse config, a queue type, which can't be
+ * tested yet) is still a 200, with `success: false` and `error` set and no `status`.
  */
-export interface DestinationTestResult {
+export interface DestinationDeliveryTestResult {
   success: boolean;
+  /** Absent: only a bridge's test is a dry run. */
+  dryRun?: false;
   /** HTTP status the destination answered with. */
   status?: number;
   latencyMs?: number;
@@ -1520,6 +1629,41 @@ export interface DestinationTestResult {
   /** @deprecated The API calls this `latencyMs`; the SDK mirrors it here. */
   duration?: number;
 }
+
+/**
+ * `POST /destinations/:id/test` for a bridge destination: a dry run. It resolves the event type
+ * from the sample payload, checks the type exists and is enabled, and counts the endpoints
+ * subscribed to it. Nothing is published, written or charged.
+ */
+export interface BridgeDryRunResult {
+  /** True when the resolved event type exists and is enabled. */
+  success: boolean;
+  dryRun: true;
+  /** The event type the payload resolved to, or null if it could not be resolved. */
+  eventType: string | null;
+  eventTypeExists: boolean;
+  /**
+   * Endpoints subscribed to the event type (in `applicationId`'s application, if set). An upper
+   * bound: subscription filters and circuit state are not applied.
+   */
+  matchingEndpoints: number;
+  /** Why the event type could not be resolved, or that the bridge's stored config is invalid. */
+  error?: string;
+
+  /** Never set on a dry run; declared so code reading the delivery test's fields still compiles. */
+  status?: undefined;
+  /** Never set on a dry run. */
+  latencyMs?: undefined;
+  /** Never set on a dry run. */
+  responseBody?: undefined;
+  /** @deprecated Never set on a dry run. */
+  statusCode?: undefined;
+  /** @deprecated Never set on a dry run. */
+  duration?: undefined;
+}
+
+/** What `destinations.test` returns. Check `dryRun` to tell a bridge's dry run apart. */
+export type DestinationTestResult = DestinationDeliveryTestResult | BridgeDryRunResult;
 
 export type CircuitStatus = 'closed' | 'open' | 'half_open';
 

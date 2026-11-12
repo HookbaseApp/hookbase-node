@@ -97,3 +97,19 @@ export abstract class BaseResource {
     }
   }
 }
+
+/**
+ * Tell a params object from RequestOptions in an optional argument (the two have no keys in
+ * common), so methods that gained params keep accepting `(id, options)`.
+ */
+export function splitParams<P extends object>(
+  paramsOrOptions: P | RequestOptions | undefined,
+  maybeOptions: RequestOptions | undefined,
+  paramKeys: Array<keyof P>
+): [P | undefined, RequestOptions | undefined] {
+  if (maybeOptions !== undefined) return [paramsOrOptions as P | undefined, maybeOptions];
+  if (paramsOrOptions && paramKeys.some((k) => k in paramsOrOptions)) {
+    return [paramsOrOptions as P, undefined];
+  }
+  return [undefined, paramsOrOptions as RequestOptions | undefined];
+}
