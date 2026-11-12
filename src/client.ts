@@ -175,10 +175,12 @@ export class Hookbase implements ApiClient {
     const idempotencyKey = options?.requestOptions?.idempotencyKey;
     // A POST that failed on a 5xx, a timeout or a dropped connection may still have been carried
     // out, so repeating it can create the thing twice (a second rotation, a second replay, a
-    // second send). Only an idempotency key makes that safe, so without one a POST is not
-    // retried on those failures, even when the caller passes `retries`. A 429 is still
-    // retried: the API refused it, so nothing ran.
-    const retryAmbiguousFailures = method.toUpperCase() !== 'POST' || !!idempotencyKey;
+    // second send). Only the API's deduplication makes that safe, and it deduplicates on
+    // `Idempotency-Key` only when sending an event. Any other POST ignores the key, so a key there
+    // does not make it retryable. Neither does passing `retries`. A 429 is still retried: the
+    // API refused it, so nothing ran.
+    const retryAmbiguousFailures =
+      method.toUpperCase() !== 'POST' || (!!idempotencyKey && deduplicatedPost(path));
     // A negative count skipped the loop entirely and threw `undefined` without sending anything.
     const retries = Math.max(0, options?.requestOptions?.retries ?? this.retries);
     const signal = options?.requestOptions?.signal;
@@ -276,7 +278,7 @@ export class Hookbase implements ApiClient {
         }
 
         // A connection that was never established cannot have reached the server, so resending
-        // it is safe even for a POST without an idempotency key.
+        // it is safe even for a POST the API does not deduplicate.
         if (!retryAmbiguousFailures && !neverSent(error)) {
           throw error;
         }
@@ -459,6 +461,18 @@ export function parseRetryAfter(header: string | null, now: number = Date.now())
   const date = Date.parse(value);
   if (!Number.isNaN(date)) return Math.max(0, Math.ceil((date - now) / 1000));
   return DEFAULT_RETRY_AFTER_SECONDS;
+}
+
+/**
+ * POST paths where the API deduplicates on `Idempotency-Key` (api/src/routes/send-event.ts and
+ * v1-events.ts), so resending one that carries a key is safe. Every other POST ignores the key.
+ */
+const IDEMPOTENT_POST_PATHS: ReadonlySet<string> = new Set(['/api/send-event', '/v1/events']);
+
+/** Whether the API deduplicates a POST to `path`, matched without its query string. */
+function deduplicatedPost(path: string): boolean {
+  const end = path.search(/[?#]/);
+  return IDEMPOTENT_POST_PATHS.has(end === -1 ? path : path.slice(0, end));
 }
 
 /** Connection-phase failures: the request never reached the server. */

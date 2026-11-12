@@ -190,17 +190,76 @@ describe('transport', () => {
   });
 
   describe('retry policy', () => {
-    it('retries a POST on a 5xx when it carries an idempotency key, resending the same key', async () => {
+    it('retries a POST to send-event on a 5xx when it carries an idempotency key, resending the same key', async () => {
       vi.useFakeTimers();
       const client = new Hookbase({ apiKey: 'k', fetch: mockFetch, retries: 2 });
       mockFetch
         .mockResolvedValueOnce(response(503, { error: 'unavailable' }))
         .mockResolvedValueOnce(response(200, { ok: true }));
-      const pending = client.request('POST', '/api/x', { body: {}, requestOptions: { idempotencyKey: 'idem_1' } });
+      const pending = client.request('POST', '/api/send-event', {
+        body: {},
+        requestOptions: { idempotencyKey: 'idem_1' },
+      });
       await vi.runAllTimersAsync();
       await expect(pending).resolves.toEqual({ ok: true });
       expect(mockFetch).toHaveBeenCalledTimes(2);
       expect(mockFetch.mock.calls.map((c) => c[1].headers['Idempotency-Key'])).toEqual(['idem_1', 'idem_1']);
+    });
+
+    it('retries a keyed POST to /v1/events too, matching the path without its query string', async () => {
+      vi.useFakeTimers();
+      const client = new Hookbase({ apiKey: 'k', fetch: mockFetch, retries: 1 });
+      for (const path of ['/v1/events', '/api/send-event?source=sdk']) {
+        mockFetch.mockReset();
+        mockFetch
+          .mockResolvedValueOnce(response(503, { error: 'unavailable' }))
+          .mockResolvedValueOnce(response(201, { ok: path }));
+        const pending = client.request('POST', path, { body: {}, requestOptions: { idempotencyKey: 'idem_1' } });
+        await vi.runAllTimersAsync();
+        await expect(pending).resolves.toEqual({ ok: path });
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+      }
+    });
+
+    // The API deduplicates on Idempotency-Key only when sending an event. Every other POST ignores
+    // the key, so retrying one after an ambiguous failure could run it twice.
+    it('does not retry a keyed POST the API does not deduplicate after a 5xx or dropped connection', async () => {
+      vi.useFakeTimers();
+      const client = new Hookbase({ apiKey: 'k', fetch: mockFetch, retries: 3 });
+      const attempt = async (path: string) => {
+        const pending = client
+          .request('POST', path, { body: {}, requestOptions: { idempotencyKey: 'idem_1', retries: 3 } })
+          .catch((e: unknown) => e);
+        await vi.runAllTimersAsync();
+        return pending;
+      };
+
+      for (const path of ['/api/x', '/api/send-event/x', '/api/webhook-endpoints/ep_1/rotate-secret?next=/v1/events']) {
+        mockFetch.mockReset();
+        mockFetch.mockResolvedValue(response(503, { error: 'unavailable' }));
+        expect(await attempt(path)).toMatchObject({ status: 503 });
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+        // The key still goes out; it just doesn't make the call retryable.
+        expect(mockFetch.mock.calls[0][1].headers['Idempotency-Key']).toBe('idem_1');
+      }
+
+      mockFetch.mockReset();
+      mockFetch.mockRejectedValue(new TypeError('fetch failed'));
+      expect(await attempt('/api/x')).toBeInstanceOf(HookbaseNetworkError);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('still retries a keyed POST the API does not deduplicate on a 429 or a refused connection', async () => {
+      vi.useFakeTimers();
+      const client = new Hookbase({ apiKey: 'k', fetch: mockFetch, retries: 2 });
+      mockFetch
+        .mockResolvedValueOnce(response(429, { error: 'slow down' }, { 'retry-after': '1' }))
+        .mockRejectedValueOnce(connectionRefused())
+        .mockResolvedValueOnce(response(201, { ok: true }));
+      const pending = client.request('POST', '/api/x', { body: {}, requestOptions: { idempotencyKey: 'idem_1' } });
+      await vi.runAllTimersAsync();
+      await expect(pending).resolves.toEqual({ ok: true });
+      expect(mockFetch).toHaveBeenCalledTimes(3);
     });
 
     it('retries PATCH, PUT and DELETE on a 5xx', async () => {

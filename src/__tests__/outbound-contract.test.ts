@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hookbase } from '../client';
 import type { MessageStatus } from '../types';
 
@@ -229,18 +229,75 @@ describe('outbound contract', () => {
       expect(mockFetch).toHaveBeenCalledTimes(1);
     });
 
-    it('retries a POST with an idempotency key and explicit retries', async () => {
+    // Only send-event deduplicates on the key. Anywhere else a retried call that had gone through
+    // runs twice: a second replay, or a second rotation that replaces the secret just handed out.
+    describe('a POST the API does not deduplicate, with an idempotency key', () => {
+      async function settle<T>(promise: Promise<T>): Promise<T | unknown> {
+        const pending = promise.catch((e: unknown) => e);
+        await vi.runAllTimersAsync();
+        return pending;
+      }
+
+      beforeEach(() => {
+        vi.useFakeTimers();
+      });
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it('is not retried after a 503, even with explicit retries', async () => {
+        const retrying = new Hookbase({ apiKey: 'k', fetch: mockFetch, retries: 0 });
+        mockFetch.mockResolvedValue(errorResponse(503));
+
+        expect(await settle(retrying.dlq.retry('a', { retries: 1, idempotencyKey: 'k1' }))).toMatchObject({
+          status: 503,
+        });
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+      });
+
+      it('endpoints.rotateSecret is not retried after a 503', async () => {
+        const retrying = new Hookbase({ apiKey: 'k', fetch: mockFetch, retries: 3 });
+        mockFetch.mockResolvedValue(errorResponse(503));
+
+        expect(
+          await settle(retrying.endpoints.rotateSecret('app_1', 'ep_1', { idempotencyKey: 'rot_1' }))
+        ).toMatchObject({ status: 503 });
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+
+        expect(
+          await settle(
+            retrying.endpoints.rotateSecret('app_1', 'ep_1', { gracePeriodSeconds: 60 }, { idempotencyKey: 'rot_2', retries: 3 })
+          )
+        ).toMatchObject({ status: 503 });
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+        expect(headersOf(mockFetch.mock.calls[1])['Idempotency-Key']).toBe('rot_2');
+      });
+
+      it('endpoints.rotateSecret is still retried on a 429, which ran nothing', async () => {
+        const retrying = new Hookbase({ apiKey: 'k', fetch: mockFetch, retries: 2 });
+        const rotated = { secret: 'whsec_new', signatureScheme: 'hmac-sha256', previousSecretExpiresAt: null };
+        mockFetch
+          .mockResolvedValueOnce({ ...errorResponse(429), headers: new Map([['retry-after', '1']]) })
+          .mockResolvedValueOnce(jsonResponse(rotated));
+
+        expect(
+          await settle(retrying.endpoints.rotateSecret('app_1', 'ep_1', { idempotencyKey: 'rot_1' }))
+        ).toMatchObject({ secret: 'whsec_new' });
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+      });
+    });
+
+    it('retries messages.send after a 503: send-event deduplicates on the key', async () => {
       vi.useFakeTimers();
       try {
-        const retrying = new Hookbase({ apiKey: 'k', fetch: mockFetch, retries: 0 });
-        mockFetch
-          .mockResolvedValueOnce(errorResponse(503))
-          .mockResolvedValueOnce(jsonResponse({ data: { originalMessageId: 'a', newMessageId: 'b', status: 'queued' } }, 201));
+        const retrying = new Hookbase({ apiKey: 'k', fetch: mockFetch, retries: 1 });
+        mockFetch.mockResolvedValueOnce(errorResponse(503)).mockResolvedValueOnce(jsonResponse(sendResult, 201));
 
-        const pending = retrying.dlq.retry('a', { retries: 1, idempotencyKey: 'k1' });
+        const pending = retrying.messages.send('app_1', { eventType: 'x', payload: {} }, { idempotencyKey: 'key_1' });
         await vi.runAllTimersAsync();
-        await expect(pending).resolves.toMatchObject({ newMessageId: 'b' });
+        await expect(pending).resolves.toMatchObject({ eventId: 'evt_1' });
         expect(mockFetch).toHaveBeenCalledTimes(2);
+        expect(mockFetch.mock.calls.map((c) => headersOf(c)['Idempotency-Key'])).toEqual(['key_1', 'key_1']);
       } finally {
         vi.useRealTimers();
       }

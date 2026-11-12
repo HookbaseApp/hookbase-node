@@ -2734,6 +2734,11 @@ export interface RequestOptions {
   retries?: number;
   /** Abort signal for cancellation */
   signal?: AbortSignal;
-  /** Idempotency key for safe retries */
+  /**
+   * Sent as the `Idempotency-Key` header. The API deduplicates on it only when sending an event
+   * (`messages.send()`, `POST /api/send-event` and `POST /v1/events`), so only there does it make a
+   * POST safe to retry after a timeout, 5xx or dropped connection. Other endpoints ignore it, and
+   * a POST to them is not retried on those failures whether or not you pass a key.
+   */
   idempotencyKey?: string;
 }

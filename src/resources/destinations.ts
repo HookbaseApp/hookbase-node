@@ -1,4 +1,4 @@
-import { BaseResource, splitParams, withoutIdempotencyKey, type ApiClient } from './base';
+import { BaseResource, splitParams, type ApiClient } from './base';
 import {
   createDestinationBody,
   importBody,
@@ -225,9 +225,9 @@ export class DestinationsResource extends BaseResource {
    * the API defaults to 3600) to choose how long; 0 retires the old secret at once.
    *
    * Never retried after a timeout, 5xx or dropped connection, even with an `idempotencyKey`: the
-   * API does not deduplicate rotations, so the key is not sent. A rotation that went through and
-   * was repeated would replace the secret you were just handed, and the one your receivers hold
-   * would drop out of the grace period. A 429 is still retried.
+   * API does not deduplicate rotations. A rotation that went through and was repeated would
+   * replace the secret you were just handed, and the one your receivers hold would drop out of
+   * the grace period. A 429 is still retried.
    */
   async rotateSecret(id: string, options?: RequestOptions): Promise<DestinationSigningSecret>;
   async rotateSecret(
@@ -248,7 +248,7 @@ export class DestinationsResource extends BaseResource {
     const result = await this.client.request<DestinationSigningSecret>(
       'POST',
       `/api/destinations/${encodeURIComponent(id)}/rotate-secret`,
-      { body: params, requestOptions: withoutIdempotencyKey(options) }
+      { body: params, requestOptions: options }
     );
     result.previousSecretExpiresAt ??= null;
     return result;

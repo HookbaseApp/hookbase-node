@@ -110,7 +110,7 @@ describe('deliveries.replayWithEdit', () => {
   });
 
   // The API doesn't deduplicate replays: a retried replay that had gone through is delivered twice.
-  it('is not retried after a 502 even with an idempotencyKey, which is not sent', async () => {
+  it('is not retried after a 502 even with an idempotencyKey', async () => {
     const retrying = new Hookbase({ apiKey: 'k', fetch: mockFetch, retries: 3 });
     mockFetch.mockResolvedValueOnce(jsonResponse({ error: 'boom' }, 502));
 
@@ -118,7 +118,8 @@ describe('deliveries.replayWithEdit', () => {
       retrying.deliveries.replayWithEdit('del_1', { payloadPatch: { a: 1 } }, { idempotencyKey: 'rep_1', retries: 3 })
     ).rejects.toMatchObject({ status: 502 });
     expect(mockFetch).toHaveBeenCalledTimes(1);
-    expect(call(mockFetch).headers['Idempotency-Key']).toBeUndefined();
+    // Sent, but the API ignores it on this route, so it can't make the replay retryable.
+    expect(call(mockFetch).headers['Idempotency-Key']).toBe('rep_1');
   });
 
   it('still retries a 429, which ran nothing', async () => {

@@ -128,15 +128,15 @@ describe('destinations: signing secrets', () => {
     expect(rotated.previousSecretExpiresAt).toBeNull();
   });
 
-  it('rotateSecret still takes RequestOptions as the second argument, and drops idempotencyKey', async () => {
+  it('rotateSecret still takes RequestOptions as the second argument', async () => {
     mockFetch.mockResolvedValueOnce(jsonResponse({ signingSecret: 'whsec_new', previousSecretExpiresAt: null }));
 
     await client.destinations.rotateSecret('dst_1', { idempotencyKey: 'rot_1' });
 
     const c = call(mockFetch);
     expect(c.body).toBeUndefined();
-    // The API doesn't deduplicate rotations, so the key isn't sent (and can't make it retryable).
-    expect(c.headers['Idempotency-Key']).toBeUndefined();
+    // Sent like any other option, though the API ignores it here and it can't make a rotation retryable.
+    expect(c.headers['Idempotency-Key']).toBe('rot_1');
   });
 
   it('rotateSecret is not retried after a 5xx', async () => {

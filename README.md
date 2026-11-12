@@ -567,10 +567,12 @@ try {
   A `Retry-After` over 60s is not waited out: the `HookbaseRateLimitError` is thrown at once with
   `retryAfter` set.
 - **5xx, timeouts and network errors** are retried with exponential backoff for GET, PUT, PATCH
-  and DELETE. A POST is retried on these only with an idempotency key (passing `retries` alone is
-  not enough), since the first attempt may have run. A POST whose connection was refused is retried.
-  `destinations.rotateSecret()` and `deliveries.replayWithEdit()` are never retried on these: the
-  API doesn't deduplicate them, so they don't send an idempotency key even when you pass one.
+  and DELETE. A POST is retried on these only when the API deduplicates it, which is sending an
+  event with an idempotency key: `messages.send()` (it always sends one), or `POST /api/send-event`
+  or `POST /v1/events` through `request()` with an `idempotencyKey`. Every other POST (rotations,
+  replays, tests, creates) ignores the key, so it is not retried on these even when you pass a key
+  or `retries`, since the first attempt may have run. A POST whose connection was refused is
+  retried.
 - **Other 4xx** are never retried. A request cancelled with `signal` is not retried.
 
 ## API keys
@@ -657,6 +659,12 @@ Behaviour changes:
   `sources.get()`, `list()` and `export()`, as the types always said. The API used to send them as
   JSON strings: remove any `JSON.parse()` of these fields.
 - `deliveries.list({ status: 'pending' })` also returns `awaiting_retry` and `held` deliveries.
+- An `idempotencyKey` no longer makes every POST retry after a 5xx, timeout or dropped connection,
+  only one that sends an event (`messages.send()`, or `POST /api/send-event` and `/v1/events`
+  through `request()`). Those are the only POSTs the API deduplicates. On any other POST, such as
+  `endpoints.rotateSecret()`, `deliveries.replay()` or `dlq.retry()`, the key is still sent but
+  ignored, and a retry could run the call twice: a second rotation replaces the secret the first
+  returned. 429s and refused connections are still retried.
 
 ## Upgrading to 4.1
 
@@ -675,7 +683,8 @@ but strict TypeScript code may need small edits:
 Behaviour changes:
 
 - A `POST` without an `idempotencyKey` is no longer retried on a 5xx, timeout or dropped connection
-  when you pass `retries`. Pass an `idempotencyKey` to make it retry-safe.
+  when you pass `retries`. Pass an `idempotencyKey` to make it retry-safe (from 4.2, only when
+  sending an event).
 - A 429 whose `Retry-After` is over 60s throws `HookbaseRateLimitError` at once instead of waiting.
 
 ## Examples
