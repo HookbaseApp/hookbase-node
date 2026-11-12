@@ -180,7 +180,7 @@ export class Hookbase implements ApiClient {
     // does not make it retryable. Neither does passing `retries`. A 429 is still retried: the
     // API refused it, so nothing ran.
     const retryAmbiguousFailures =
-      method.toUpperCase() !== 'POST' || (!!idempotencyKey && deduplicatedPost(path));
+      method.toUpperCase() !== 'POST' || (!!idempotencyKey?.trim() && deduplicatedPost(path));
     // A negative count skipped the loop entirely and threw `undefined` without sending anything.
     const retries = Math.max(0, options?.requestOptions?.retries ?? this.retries);
     const signal = options?.requestOptions?.signal;
@@ -466,13 +466,14 @@ export function parseRetryAfter(header: string | null, now: number = Date.now())
 /**
  * POST paths where the API deduplicates on `Idempotency-Key` (api/src/routes/send-event.ts and
  * v1-events.ts), so resending one that carries a key is safe. Every other POST ignores the key.
+ * send-event is also mounted under `/api/organizations/:orgId`.
  */
-const IDEMPOTENT_POST_PATHS: ReadonlySet<string> = new Set(['/api/send-event', '/v1/events']);
+const IDEMPOTENT_POST_PATH = /^(?:\/api(?:\/organizations\/[^/]+)?\/send-event|\/v1\/events)$/;
 
 /** Whether the API deduplicates a POST to `path`, matched without its query string. */
 function deduplicatedPost(path: string): boolean {
   const end = path.search(/[?#]/);
-  return IDEMPOTENT_POST_PATHS.has(end === -1 ? path : path.slice(0, end));
+  return IDEMPOTENT_POST_PATH.test(end === -1 ? path : path.slice(0, end));
 }
 
 /** Connection-phase failures: the request never reached the server. */

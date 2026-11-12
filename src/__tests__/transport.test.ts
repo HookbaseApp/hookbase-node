@@ -209,7 +209,7 @@ describe('transport', () => {
     it('retries a keyed POST to /v1/events too, matching the path without its query string', async () => {
       vi.useFakeTimers();
       const client = new Hookbase({ apiKey: 'k', fetch: mockFetch, retries: 1 });
-      for (const path of ['/v1/events', '/api/send-event?source=sdk']) {
+      for (const path of ['/v1/events', '/api/send-event?source=sdk', '/api/organizations/org_1/send-event']) {
         mockFetch.mockReset();
         mockFetch
           .mockResolvedValueOnce(response(503, { error: 'unavailable' }))
@@ -234,7 +234,12 @@ describe('transport', () => {
         return pending;
       };
 
-      for (const path of ['/api/x', '/api/send-event/x', '/api/webhook-endpoints/ep_1/rotate-secret?next=/v1/events']) {
+      for (const path of [
+        '/api/x',
+        '/api/send-event/x',
+        '/api/organizations/org_1/x/send-event',
+        '/api/webhook-endpoints/ep_1/rotate-secret?next=/v1/events',
+      ]) {
         mockFetch.mockReset();
         mockFetch.mockResolvedValue(response(503, { error: 'unavailable' }));
         expect(await attempt(path)).toMatchObject({ status: 503 });
@@ -246,6 +251,19 @@ describe('transport', () => {
       mockFetch.mockReset();
       mockFetch.mockRejectedValue(new TypeError('fetch failed'));
       expect(await attempt('/api/x')).toBeInstanceOf(HookbaseNetworkError);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    // fetch trims header values and the API trims the key, so a blank key deduplicates nothing.
+    it('does not retry a POST to send-event whose idempotency key is blank', async () => {
+      vi.useFakeTimers();
+      const client = new Hookbase({ apiKey: 'k', fetch: mockFetch, retries: 3 });
+      mockFetch.mockResolvedValue(response(503, { error: 'unavailable' }));
+      const pending = client
+        .request('POST', '/api/send-event', { body: {}, requestOptions: { idempotencyKey: '  ' } })
+        .catch((e: unknown) => e);
+      await vi.runAllTimersAsync();
+      expect(await pending).toMatchObject({ status: 503 });
       expect(mockFetch).toHaveBeenCalledTimes(1);
     });
 
