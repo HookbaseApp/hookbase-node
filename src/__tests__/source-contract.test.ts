@@ -211,4 +211,54 @@ describe('source contract', () => {
       expect(events.eventTypes[0].type).toBe('charge.succeeded');
     });
   });
+
+  // The catalog entry a source was made from (api #131, migration 0142): set on create only, and
+  // read back by get, list and export. The same change made the four list fields real arrays on
+  // every read; before it, get/list/export sent them as JSON strings.
+  describe('catalog entry', () => {
+    const PLAID_SOURCE = {
+      ...WISE_SOURCE,
+      id: 'src_plaid',
+      name: 'Plaid',
+      slug: 'plaid',
+      provider: 'custom-hmac',
+      catalogProvider: 'plaid',
+      ipFilterMode: 'allowlist',
+      ipAllowlist: ['52.21.26.131'],
+      ipDenylist: [],
+      encryptFields: [],
+      maskFields: [],
+    };
+
+    it('sends catalogProvider on create', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ source: { ...PLAID_SOURCE, signingSecret: null } }, 201));
+      const created = await client.sources.create({
+        name: 'Plaid',
+        slug: 'plaid',
+        provider: 'custom-hmac',
+        catalogProvider: 'plaid',
+        ipFilterMode: 'allowlist',
+        ipAllowlist: ['52.21.26.131'],
+      });
+      expect(JSON.parse(lastCall()[1].body as string)).toMatchObject({
+        catalogProvider: 'plaid',
+        ipAllowlist: ['52.21.26.131'],
+      });
+      expect(created.catalogProvider).toBe('plaid');
+    });
+
+    it('reads catalogProvider and the list fields back from get', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ source: PLAID_SOURCE }));
+      const source = await client.sources.get('src_plaid');
+      expect(source.catalogProvider).toBe('plaid');
+      expect(source.ipAllowlist).toEqual(['52.21.26.131']);
+    });
+
+    it('an unknown catalog entry is a 400', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ error: 'Unknown catalogProvider: nope' }, 400));
+      await expect(
+        client.sources.create({ name: 'X', slug: 'x', catalogProvider: 'nope' })
+      ).rejects.toThrow(HookbaseValidationError);
+    });
+  });
 });

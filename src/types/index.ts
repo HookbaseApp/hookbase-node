@@ -1054,6 +1054,11 @@ export interface Source {
   name: string;
   slug: string;
   provider: SourceProvider | null;
+  /**
+   * The provider-catalog entry (`providers.list()` id) the source was made from, or null. Set on
+   * create only; nothing changes it later. Null on sources created before the API recorded it.
+   */
+  catalogProvider: string | null;
   description: string | null;
   /** Whether a signing secret is set. The secret itself is not returned here. */
   hasSigningSecret: boolean;
@@ -1127,6 +1132,15 @@ export interface CreateSourceInput {
   /** Required: it forms the ingest URL, `/ingest/<org>/<slug>`, and cannot be changed later. */
   slug: string;
   provider?: SourceProvider;
+  /**
+   * The provider-catalog entry (`providers.list()` id) this source is made from, max 100
+   * characters; an id the catalog doesn't have is a 400. Set it when the source is for a catalog
+   * vendor, even one saved under another `provider` (several are saved as Custom HMAC). For those,
+   * the vendor's published IP ranges in `ipAllowlist` no longer count as a verified sender for
+   * bridge destinations, since the vendor sends every customer's webhooks from them. Create only:
+   * it cannot be changed later.
+   */
+  catalogProvider?: string | null;
   description?: string;
   /**
    * What to supply depends on the provider (the catalog's `signatureVerification.secretSource`;
