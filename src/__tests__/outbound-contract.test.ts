@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hookbase } from '../client';
 import type { MessageStatus } from '../types';
 
@@ -166,6 +166,41 @@ describe('outbound contract', () => {
       expect(result.endpoints).toEqual(sendResult.data.endpoints);
       expect(result.messageId).toBe('evt_1');
       expect(result.outboundMessages.map((m) => m.endpointId)).toEqual(['ep_1', 'ep_2']);
+      expect(result.outboundMessages.map((m) => m.status)).toEqual(['pending', 'pending']);
+      expect(result.messagesHeld).toBeUndefined();
+    });
+
+    // send-event.ts adds `messagesHeld` (only when > 0) and `eventVersion` (only for a versioned
+    // event type). send() used to rebuild the response from three named fields, dropping both, and
+    // reported every message as 'pending' even when the API had created it held.
+    it('passes messagesHeld and eventVersion through, and reports all-held messages as held', async () => {
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ data: { ...sendResult.data, messagesHeld: 2, eventVersion: 'v2' } }, 201)
+      );
+
+      const result = await client.messages.send('app_1', { eventType: 'x', payload: {} });
+
+      expect(result.messagesHeld).toBe(2);
+      expect(result.eventVersion).toBe('v2');
+      expect(result.messagesQueued).toBe(2);
+      expect(result.outboundMessages.map((m) => m.status)).toEqual(['held', 'held']);
+    });
+
+    it("reports 'unknown' when only some messages were held, since the response doesn't say which", async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({ data: { ...sendResult.data, messagesHeld: 1 } }, 201));
+
+      const result = await client.messages.send('app_1', { eventType: 'x', payload: {} });
+
+      expect(result.messagesHeld).toBe(1);
+      expect(result.outboundMessages.map((m) => m.status)).toEqual(['unknown', 'unknown']);
+    });
+
+    it('keeps response fields it does not know about', async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({ data: { ...sendResult.data, addedLater: true } }, 201));
+
+      const result = await client.messages.send('app_1', { eventType: 'x', payload: {} });
+
+      expect((result as unknown as Record<string, unknown>).addedLater).toBe(true);
     });
   });
 
@@ -194,18 +229,75 @@ describe('outbound contract', () => {
       expect(mockFetch).toHaveBeenCalledTimes(1);
     });
 
-    it('retries a POST with an idempotency key and explicit retries', async () => {
+    // Only send-event deduplicates on the key. Anywhere else a retried call that had gone through
+    // runs twice: a second replay, or a second rotation that replaces the secret just handed out.
+    describe('a POST the API does not deduplicate, with an idempotency key', () => {
+      async function settle<T>(promise: Promise<T>): Promise<T | unknown> {
+        const pending = promise.catch((e: unknown) => e);
+        await vi.runAllTimersAsync();
+        return pending;
+      }
+
+      beforeEach(() => {
+        vi.useFakeTimers();
+      });
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it('is not retried after a 503, even with explicit retries', async () => {
+        const retrying = new Hookbase({ apiKey: 'k', fetch: mockFetch, retries: 0 });
+        mockFetch.mockResolvedValue(errorResponse(503));
+
+        expect(await settle(retrying.dlq.retry('a', { retries: 1, idempotencyKey: 'k1' }))).toMatchObject({
+          status: 503,
+        });
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+      });
+
+      it('endpoints.rotateSecret is not retried after a 503', async () => {
+        const retrying = new Hookbase({ apiKey: 'k', fetch: mockFetch, retries: 3 });
+        mockFetch.mockResolvedValue(errorResponse(503));
+
+        expect(
+          await settle(retrying.endpoints.rotateSecret('app_1', 'ep_1', { idempotencyKey: 'rot_1' }))
+        ).toMatchObject({ status: 503 });
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+
+        expect(
+          await settle(
+            retrying.endpoints.rotateSecret('app_1', 'ep_1', { gracePeriodSeconds: 60 }, { idempotencyKey: 'rot_2', retries: 3 })
+          )
+        ).toMatchObject({ status: 503 });
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+        expect(headersOf(mockFetch.mock.calls[1])['Idempotency-Key']).toBe('rot_2');
+      });
+
+      it('endpoints.rotateSecret is still retried on a 429, which ran nothing', async () => {
+        const retrying = new Hookbase({ apiKey: 'k', fetch: mockFetch, retries: 2 });
+        const rotated = { secret: 'whsec_new', signatureScheme: 'hmac-sha256', previousSecretExpiresAt: null };
+        mockFetch
+          .mockResolvedValueOnce({ ...errorResponse(429), headers: new Map([['retry-after', '1']]) })
+          .mockResolvedValueOnce(jsonResponse(rotated));
+
+        expect(
+          await settle(retrying.endpoints.rotateSecret('app_1', 'ep_1', { idempotencyKey: 'rot_1' }))
+        ).toMatchObject({ secret: 'whsec_new' });
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+      });
+    });
+
+    it('retries messages.send after a 503: send-event deduplicates on the key', async () => {
       vi.useFakeTimers();
       try {
-        const retrying = new Hookbase({ apiKey: 'k', fetch: mockFetch, retries: 0 });
-        mockFetch
-          .mockResolvedValueOnce(errorResponse(503))
-          .mockResolvedValueOnce(jsonResponse({ data: { originalMessageId: 'a', newMessageId: 'b', status: 'queued' } }, 201));
+        const retrying = new Hookbase({ apiKey: 'k', fetch: mockFetch, retries: 1 });
+        mockFetch.mockResolvedValueOnce(errorResponse(503)).mockResolvedValueOnce(jsonResponse(sendResult, 201));
 
-        const pending = retrying.dlq.retry('a', { retries: 1, idempotencyKey: 'k1' });
+        const pending = retrying.messages.send('app_1', { eventType: 'x', payload: {} }, { idempotencyKey: 'key_1' });
         await vi.runAllTimersAsync();
-        await expect(pending).resolves.toMatchObject({ newMessageId: 'b' });
+        await expect(pending).resolves.toMatchObject({ eventId: 'evt_1' });
         expect(mockFetch).toHaveBeenCalledTimes(2);
+        expect(mockFetch.mock.calls.map((c) => headersOf(c)['Idempotency-Key'])).toEqual(['key_1', 'key_1']);
       } finally {
         vi.useRealTimers();
       }

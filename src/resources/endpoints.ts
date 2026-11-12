@@ -1,4 +1,4 @@
-import { BaseResource, type ApiClient } from './base';
+import { BaseResource, splitParams, type ApiClient } from './base';
 import { endpointRequestBody, withEndpointAliases } from './wire';
 import type {
   Endpoint,
@@ -135,8 +135,9 @@ export class EndpointsResource extends BaseResource {
    * Pass `{ gracePeriodSeconds }` (0-86400; the API defaults to 3600) to choose how long the
    * previous key keeps signing; 0 retires it immediately.
    *
-   * Not retried on a timeout or 5xx: a rotation that did go through and is then repeated
-   * replaces the secret you were just handed.
+   * Not retried on a timeout, 5xx or dropped connection, even with an `idempotencyKey`: the API
+   * does not deduplicate rotations, and a rotation that did go through and is then repeated
+   * replaces the secret you were just handed. A 429 is still retried.
    */
   async rotateSecret(
     applicationId: string,
@@ -259,20 +260,4 @@ export class EndpointsResource extends BaseResource {
       { body: params, requestOptions: options }
     );
   }
-}
-
-/**
- * Tell a params object from RequestOptions in the optional third argument (the two have no keys
- * in common), so methods that gained params keep accepting `(appId, id, options)`.
- */
-function splitParams<P extends object>(
-  paramsOrOptions: P | RequestOptions | undefined,
-  maybeOptions: RequestOptions | undefined,
-  paramKeys: Array<keyof P>
-): [P | undefined, RequestOptions | undefined] {
-  if (maybeOptions !== undefined) return [paramsOrOptions as P | undefined, maybeOptions];
-  if (paramsOrOptions && paramKeys.some((k) => k in paramsOrOptions)) {
-    return [paramsOrOptions as P, undefined];
-  }
-  return [undefined, paramsOrOptions as RequestOptions | undefined];
 }

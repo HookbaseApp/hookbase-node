@@ -8,6 +8,7 @@ import type {
   TransformTestInput,
   TransformTestResult,
   TransformType,
+  TransformEnginesResponse,
   ContentFormat,
   PaginatedResponse,
   RequestOptions,
@@ -140,5 +141,15 @@ export class TransformsResource extends BaseResource {
       { body: data, requestOptions: options }
     );
     return withTransformTestAliases(result);
+  }
+
+  /**
+   * List the transform languages this deployment supports, with starter code and whether each
+   * can run here.
+   */
+  async engines(options?: RequestOptions): Promise<TransformEnginesResponse> {
+    return this.client.request<TransformEnginesResponse>('GET', '/api/transforms/engines', {
+      requestOptions: options,
+    });
   }
 }

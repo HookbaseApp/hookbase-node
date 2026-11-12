@@ -99,6 +99,7 @@ export type {
   Message,
   OutboundMessage,
   MessageAttempt,
+  OutboundMessageBridge,
   SendMessageInput,
   SendMessageResponse,
   MessageReplayResult,
@@ -136,11 +137,25 @@ export type {
   // Destinations (inbound)
   HttpMethod,
   AuthType,
+  DestinationType,
+  S3Config,
+  R2Config,
+  GCSConfig,
+  AzureBlobConfig,
+  WarehouseConfig,
+  BridgeConfig,
+  FieldMapping,
   Destination,
+  DestinationWithSecret,
+  DestinationSigningSecret,
+  RotateDestinationSecretParams,
   CreateDestinationInput,
   UpdateDestinationInput,
   ListDestinationsParams,
+  TestDestinationInput,
   DestinationTestResult,
+  DestinationDeliveryTestResult,
+  BridgeDryRunResult,
 
   // Routes (inbound)
   CircuitStatus,
@@ -158,6 +173,8 @@ export type {
   InboundEvent,
   EventDetail,
   EventDebugInfo,
+  EventDebugDelivery,
+  FailurePatternHint,
   ListEventsParams,
   ExportEventsParams,
 
@@ -167,6 +184,8 @@ export type {
   DeliveryDetail,
   ListDeliveriesParams,
   ReplayResult,
+  ReplayWithEditInput,
+  ReplayTransformOverride,
   BulkReplayResult,
 
   // Transforms (inbound)
@@ -178,6 +197,8 @@ export type {
   ListTransformsParams,
   TransformTestInput,
   TransformTestResult,
+  TransformEngine,
+  TransformEnginesResponse,
 
   // Filters (inbound)
   FilterCondition,

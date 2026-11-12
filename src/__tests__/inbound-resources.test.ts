@@ -840,6 +840,22 @@ describe('Inbound Resources', () => {
       expect(result.id).toBe('tr_new');
     });
 
+    it('should list transform engines', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({
+        engines: [{
+          type: 'jq', label: 'jq', description: 'd', fileExtension: 'jq',
+          starterCode: '.', aiGenerate: true, available: false,
+        }],
+        contentFormats: ['json', 'xml', 'text'],
+      }));
+
+      const result = await client.transforms.engines();
+
+      expect(result.engines[0].type).toBe('jq');
+      expect(result.engines[0].available).toBe(false);
+      expect(mockFetch.mock.calls[0][0]).toContain('/api/transforms/engines');
+    });
+
     it('should test transform', async () => {
       // POST /transforms/test sends `result` and `contentType` (api/src/routes/transforms.ts).
       mockFetch.mockResolvedValueOnce(mockResponse({

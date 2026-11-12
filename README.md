@@ -128,7 +128,8 @@ const endpoint = await hookbase.endpoints.create('app_123', {
   circuitFailureThreshold: 5,
   circuitCooldownSeconds: 120,
 });
-console.log('Secret:', endpoint.secret); // Save this!
+// whsec_..., shown once. Store it (secretStore stands for your secret manager); don't log it.
+await secretStore.set('ep_prod', endpoint.secret!);
 
 // Ed25519 (Standard Webhooks v1a): Hookbase keeps the private key; you get the public key
 const ed = await hookbase.endpoints.create('app_123', {
@@ -150,9 +151,9 @@ await hookbase.endpoints.enable('app_123', 'ep_456');
 // (gracePeriodSeconds, 0-86400, default 3600).
 const rotated = await hookbase.endpoints.rotateSecret('app_123', 'ep_456', { gracePeriodSeconds: 600 });
 if (rotated.signatureScheme === 'ed25519') {
-  console.log(rotated.publicKey, rotated.previousPublicKey); // whpk_... new and outgoing
+  console.log(rotated.publicKey, rotated.previousPublicKey); // whpk_... new and outgoing (public)
 } else {
-  console.log(rotated.secret); // whsec_..., shown once
+  await secretStore.set('ep_456', rotated.secret); // whsec_..., shown once: store it, don't log it
 }
 
 // Get statistics
@@ -257,6 +258,8 @@ const result = await hookbase.messages.send('app_123', {
   metadata: { source: 'checkout' },
 });
 console.log(`Event ${result.eventId} queued for ${result.messagesQueued} endpoint(s)`);
+// Of those, how many were created `held` because their endpoint's circuit is open (absent if none)
+if (result.messagesHeld) console.log(`${result.messagesHeld} held until their endpoint recovers`);
 
 // Deliver to specific endpoints only
 await hookbase.messages.send('app_123', {
@@ -335,6 +338,103 @@ await hookbase.sources.rotateSecret('src_123');
 
 // sourceId filters take an id or a slug; an unknown one is a 404, not an empty list
 await hookbase.events.list({ sourceId: 'stripe' });
+
+// Record the catalog entry a source is made from (create only). For vendors saved as custom-hmac,
+// it stops the vendor's shared IP ranges counting as a verified sender for bridge destinations.
+await hookbase.sources.create({
+  name: 'Plaid',
+  slug: 'plaid',
+  provider: 'custom-hmac',
+  catalogProvider: 'plaid',
+});
+```
+
+### Destinations (inbound)
+
+Every `http` destination signs its deliveries with a `whsec_` secret (Standard Webhooks headers), so
+the receiver can check they came from Hookbase. `create()` returns the secret once; see
+[Verifying deliveries at a destination](#verifying-deliveries-at-a-destination).
+
+```typescript
+const destination = await hookbase.destinations.create({
+  name: 'Orders service',
+  url: 'https://orders.example.com/hookbase',
+});
+// whsec_..., in this response only: store it where the receiver reads it, don't log it
+await secretStore.set('orders-service', destination.signingSecret!);
+
+// Show it again, or rotate it (both need a key with write scope)
+const { signingSecret } = await hookbase.destinations.revealSecret(destination.id);
+// For gracePeriodSeconds (default 3600) deliveries carry signatures from both secrets.
+// Never retried after a timeout or 5xx: check revealSecret() before rotating again.
+const rotated = await hookbase.destinations.rotateSecret(destination.id, { gracePeriodSeconds: 600 });
+await secretStore.set('orders-service', rotated.signingSecret);
+console.log(`The old secret verifies until ${rotated.previousSecretExpiresAt}`);
+```
+
+A **bridge** destination publishes each delivery as an outbound event, to the endpoints subscribed to
+that event type. By default it publishes only events whose source verified the sender
+(`allowUnverifiedSources` overrides that), and creating or changing one also needs the
+`events:send` permission. Its test is a dry run: it resolves the event type from a sample payload and
+counts the subscribed endpoints, without publishing anything.
+
+```typescript
+const bridge = await hookbase.destinations.create({
+  name: 'Stripe to customers',
+  type: 'bridge',
+  config: {
+    eventTypeSource: 'field', // or 'fixed', with eventType: 'billing.invoice.paid'
+    eventTypeField: 'type', // a dot path into the payload
+    eventTypePrefix: 'stripe.', // invoice.paid -> stripe.invoice.paid
+  },
+});
+
+const check = await hookbase.destinations.test(bridge.id, { payload: { type: 'invoice.paid' } });
+if (check.dryRun) {
+  console.log(check.eventType, check.eventTypeExists, check.matchingEndpoints);
+}
+```
+
+The outbound messages a bridge sends point back to where they came from:
+`(await hookbase.messages.get(appId, messageId)).bridge` is `{ inboundEventId, deliveryId, hop }`.
+
+### Deliveries (inbound)
+
+```typescript
+// Replay a delivery as it was
+await hookbase.deliveries.replay('del_123');
+
+// Replay it with changes. payloadPatch is a JSON merge patch on the stored payload (null removes a
+// key), and the one to use on a source that masks or encrypts fields; modifiedPayload replaces the
+// payload outright. Pass one or the other.
+const replay = await hookbase.deliveries.replayWithEdit('del_123', {
+  payloadPatch: { data: { amount: 1000 }, debug: null },
+  destinationOverride: 'staging-orders', // id or slug
+  headersOverride: { 'X-Replayed-By': 'support' },
+});
+console.log(replay.deliveryId, replay.modified, replay.targetDestinationId);
+```
+
+### Holds while a circuit is open
+
+When a route's or an endpoint's circuit breaker opens, its deliveries and messages wait as `held`
+instead of spending attempts against a target that is down. They go out once it recovers; one still
+held when its retry window ends (`holdExpiresAt`) is dead-lettered. Holding is on by default (for
+routes, on plans with the circuit breaker; a route with failover destinations doesn't hold).
+
+Opting out does not bring retries back. With `holdOnCircuitOpen: false`, a delivery or message that
+meets an open circuit is dead-lettered at once, with the reason `circuit_breaker_open`.
+
+```typescript
+// Opt a route (or an endpoint) out: deliveries that meet its open circuit go straight to the DLQ
+await hookbase.routes.update('route_123', { holdOnCircuitOpen: false });
+
+// How many are waiting (counted up to 10,000)
+const route = await hookbase.routes.get('route_123');
+console.log(route.heldCount, route.heldCountCapped);
+
+const { data: held } = await hookbase.deliveries.list({ status: 'held' });
+held.forEach((d) => console.log(d.id, d.holdExpiresAt));
 ```
 
 ## Webhook Verification
@@ -385,6 +485,28 @@ const payload = webhook.verify(rawBody, headers);
 
 A `whsec_` secret verifies only `v1` signatures and a `whpk_` key only `v1a`; a mismatch fails with an
 error that names the scheme the endpoint actually uses.
+
+### Verifying deliveries at a destination
+
+Inbound deliveries to an `http` destination are signed the same way, with the destination's `whsec_`
+secret (from `destinations.create()` once, or `destinations.revealSecret()`). Verify them with the
+same verifier:
+
+```typescript
+import { createWebhook } from '@hookbase/sdk';
+
+const webhook = createWebhook(process.env.HOOKBASE_DESTINATION_SECRET!); // the destination's whsec_
+
+app.post('/hookbase', express.raw({ type: '*/*' }), (req, res) => {
+  const payload = webhook.verify(req.body, req.headers); // throws if the signature doesn't match
+  // webhook-id is the delivery id: the same on every retry of a delivery, so you can dedupe on it
+  res.sendStatus(200);
+});
+```
+
+During a rotation's grace period the `webhook-signature` header carries an entry for each secret, and
+either one verifies. `verify()` also parses the body as JSON; when a route's transform sends XML or
+text, check the signature with `verifySignature(body, id, timestamp, signature)` instead.
 
 ### Testing Webhooks
 
@@ -445,8 +567,12 @@ try {
   A `Retry-After` over 60s is not waited out: the `HookbaseRateLimitError` is thrown at once with
   `retryAfter` set.
 - **5xx, timeouts and network errors** are retried with exponential backoff for GET, PUT, PATCH
-  and DELETE. A POST is retried on these only with an idempotency key (passing `retries` alone is
-  not enough), since the first attempt may have run. A POST whose connection was refused is retried.
+  and DELETE. A POST is retried on these only when the API deduplicates it, which is sending an
+  event with an idempotency key: `messages.send()` (it always sends one), or `POST /api/send-event`
+  or `POST /v1/events` through `request()` with an `idempotencyKey`. Every other POST (rotations,
+  replays, tests, creates) ignores the key, so it is not retried on these even when you pass a key
+  or `retries`, since the first attempt may have run. A POST whose connection was refused is
+  retried.
 - **Other 4xx** are never retried. A request cancelled with `signal` is not retried.
 
 ## API keys
@@ -488,6 +614,64 @@ import type {
 } from '@hookbase/sdk';
 ```
 
+## Upgrading to 4.2
+
+New in 4.2:
+
+- Destination signing secrets: `destinations.create()` returns `signingSecret` once
+  (`DestinationWithSecret`), plus `destinations.revealSecret()`, `destinations.rotateSecret()` and
+  `Destination.hasSigningSecret`.
+- Bridge destinations: `type: 'bridge'` with a `BridgeConfig`, `destinations.test(id, { payload })`
+  for the dry run, and `OutboundMessage.bridge` (plus `traceId`, `eventVersion` and
+  `deliveredEventVersion`) on `messages.get()`.
+- Holds while a circuit is open: the `held` status on deliveries and outbound messages,
+  `holdExpiresAt`, `holdOnCircuitOpen` on routes and endpoints, `heldCount`/`heldCountCapped` on
+  `routes.get()`/`endpoints.get()`, `messagesHeld` on `messages.send()` and `held` in
+  `messages.getStatsSummary()`.
+- `deliveries.replayWithEdit()`.
+- `Source.catalogProvider`, set on create only.
+- `events.debug()` deliveries are typed (`EventDebugDelivery`), including `patternHints` and
+  `routeCircuit`.
+- `DeliveryStatus` lists `awaiting_retry`, `held`, `failed_over` and `schema_failed`, and no longer
+  `circuit_open`, which was never a delivery status. `MessageStatus` lists `awaiting_pull`,
+  `fifo_waiting` and `held`.
+- `TransformType` adds `typescript`, `jmespath`, `jsonlogic` and `jq`, and `transforms.engines()`
+  lists what a deployment can run.
+
+Type changes that may need small edits in strict TypeScript code:
+
+- `Destination.config` is `WarehouseConfig | BridgeConfig | null`. Reading a field the warehouse
+  configs share (`destination.config?.prefix`) without narrowing no longer compiles: narrow first
+  (`'bucket' in config`) or cast to the config type you expect.
+- `DestinationTestResult` is a union of the test-request result and the bridge dry run. Existing
+  property reads still compile; check `result.dryRun` to tell them apart.
+- New required properties (`Destination.hasSigningSecret`, `Route.holdOnCircuitOpen`,
+  `Endpoint.holdOnCircuitOpen`, `Source.catalogProvider`, `Delivery.holdExpiresAt`,
+  `OutboundMessage.holdExpiresAt`, `OutboundStatsSummary.held`) need adding where your code builds
+  these objects itself, such as test fixtures.
+
+Behaviour changes:
+
+- `messages.send()` returns every field the API sends. It used to drop `messagesHeld` and
+  `eventVersion`. The deprecated `outboundMessages[].status` was always `pending`; it is now `held`
+  when every message was held, and `unknown` when only some were (the response doesn't say which).
+- Sources' `ipAllowlist`, `ipDenylist`, `encryptFields` and `maskFields` now arrive as arrays from
+  `sources.get()`, `list()` and `export()`, as the types always said. The API used to send them as
+  JSON strings: remove any `JSON.parse()` of these fields.
+- `deliveries.list({ status: 'pending' })` also returns `awaiting_retry` and `held` deliveries.
+- An `idempotencyKey` no longer makes every POST retry after a 5xx, timeout or dropped connection,
+  only one that sends an event (`messages.send()`, or `POST /api/send-event` and `/v1/events`
+  through `request()`). Those are the only POSTs the API deduplicates. On any other POST, such as
+  `endpoints.rotateSecret()`, `deliveries.replay()` or `dlq.retry()`, the key is still sent but
+  ignored, and a retry could run the call twice: a second rotation replaces the secret the first
+  returned. 429s and refused connections are still retried.
+- `HookbaseAuthenticationError`, `HookbaseForbiddenError`, `HookbaseNotFoundError`,
+  `HookbaseValidationError` and `HookbaseRateLimitError` keep the API's own `code` and `details`.
+  They used to replace them with a fixed code (`forbidden`, `not_found`, ...), which they still use
+  when the API sends none. A plan refusal is a `HookbaseForbiddenError` with `code`
+  `LIMIT_EXCEEDED`, `FEATURE_DISABLED` or `PLAN_REQUIRED`. Code that compares `error.code` with
+  the fixed values should check `instanceof` instead.
+
 ## Upgrading to 4.1
 
 4.1 corrects several types to what the API actually returns. The runtime values are unchanged,
@@ -505,7 +689,8 @@ but strict TypeScript code may need small edits:
 Behaviour changes:
 
 - A `POST` without an `idempotencyKey` is no longer retried on a 5xx, timeout or dropped connection
-  when you pass `retries`. Pass an `idempotencyKey` to make it retry-safe.
+  when you pass `retries`. Pass an `idempotencyKey` to make it retry-safe (from 4.2, only when
+  sending an event).
 - A 429 whose `Retry-After` is over 60s throws `HookbaseRateLimitError` at once instead of waiting.
 
 ## Examples

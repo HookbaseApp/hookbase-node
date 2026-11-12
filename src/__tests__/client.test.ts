@@ -3,6 +3,7 @@ import { Hookbase, createClient } from '../client';
 import {
   HookbaseApiError,
   HookbaseAuthenticationError,
+  HookbaseForbiddenError,
   HookbaseNotFoundError,
   HookbaseRateLimitError,
   HookbaseValidationError,
@@ -14,6 +15,9 @@ describe('Hookbase Client', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // clearAllMocks keeps queued mockResolvedValueOnce replies, so a failing test would hand
+    // its unused ones to the next test.
+    mockFetch.mockReset();
   });
 
   describe('initialization', () => {
@@ -305,10 +309,98 @@ describe('Hookbase Client', () => {
 
       const error = await client.applications.get('app_123').catch((e) => e);
 
-      // HookbaseAuthenticationError fixes its own `code` to 'authentication_error' regardless
-      // of what the API sent — only the message extraction is under test here.
       expect(error).toBeInstanceOf(HookbaseAuthenticationError);
       expect(error.message).toBe('API key has been revoked');
+      expect(error.code).toBe('key_revoked');
+    });
+
+    it('keeps the API\'s code and details on a 403, so a plan refusal can be told apart', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 403,
+        headers: new Map(),
+        json: () =>
+          Promise.resolve({
+            error: 'Transforms are not available on your plan',
+            code: 'FEATURE_DISABLED',
+            details: { feature: 'transforms', plan: 'free' },
+          }),
+      });
+
+      const error = await client.applications.get('app_123').catch((e) => e);
+
+      expect(error).toBeInstanceOf(HookbaseForbiddenError);
+      expect(error.status).toBe(403);
+      expect(error.code).toBe('FEATURE_DISABLED');
+      expect(error.details).toEqual({ feature: 'transforms', plan: 'free' });
+    });
+
+    it('falls back to each class\'s own code when the API sent none', async () => {
+      const codes: Array<[number, string]> = [
+        [401, 'authentication_error'],
+        [403, 'forbidden'],
+        [404, 'not_found'],
+        [422, 'validation_error'],
+        [429, 'rate_limit_exceeded'],
+      ];
+      for (const [status, code] of codes) {
+        mockFetch.mockResolvedValueOnce({
+          ok: false,
+          status,
+          headers: new Map([['retry-after', '1']]),
+          json: () => Promise.resolve({ error: 'nope' }),
+        });
+        const error = await client.applications.get('app_123').catch((e) => e);
+        expect(error.status).toBe(status);
+        expect(error.code).toBe(code);
+      }
+    });
+
+    it('keeps the API\'s code on 404, 422 and 429, alongside validationErrors and retryAfter', async () => {
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 404,
+          headers: new Map(),
+          json: () => Promise.resolve({ error: 'No payload stored', code: 'PAYLOAD_NOT_FOUND' }),
+        })
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 422,
+          headers: new Map(),
+          json: () =>
+            Promise.resolve({
+              error: 'Invalid input',
+              code: 'VALIDATION_ERROR',
+              details: { formErrors: [], fieldErrors: { name: ['Required'] } },
+            }),
+        })
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 429,
+          headers: new Map([['retry-after', '120']]),
+          json: () => Promise.resolve({ error: 'Slow down', code: 'RATE_LIMITED' }),
+        });
+
+      const notFound = await client.applications.get('app_123').catch((e) => e);
+      expect(notFound).toBeInstanceOf(HookbaseNotFoundError);
+      expect(notFound.code).toBe('PAYLOAD_NOT_FOUND');
+
+      const invalid = await client.applications.get('app_123').catch((e) => e);
+      expect(invalid).toBeInstanceOf(HookbaseValidationError);
+      expect(invalid.code).toBe('VALIDATION_ERROR');
+      expect(invalid.validationErrors).toEqual({ name: ['Required'] });
+      expect(invalid.details).toEqual({
+        formErrors: [],
+        fieldErrors: { name: ['Required'] },
+        validationErrors: { name: ['Required'] },
+      });
+
+      const limited = await client.applications.get('app_123').catch((e) => e);
+      expect(limited).toBeInstanceOf(HookbaseRateLimitError);
+      expect(limited.code).toBe('RATE_LIMITED');
+      expect(limited.retryAfter).toBe(120);
+      expect(limited.details).toEqual({ retryAfter: 120 });
     });
 
     it('surfaces the API\'s own message on 429, not the generic default', async () => {

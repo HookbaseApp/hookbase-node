@@ -24,7 +24,7 @@ const CREATE_FIELDS = [
   'name', 'slug', 'provider', 'description', 'signingSecret', 'verifyToken', 'rejectInvalidSignatures',
   'rateLimitPerMinute', 'ipFilterMode', 'ipAllowlist', 'ipDenylist', 'encryptFields',
   'maskFields', 'dedupEnabled', 'dedupStrategy', 'dedupWindowHours', 'dedupCustomHeader',
-  'transientMode', 'allowedMethods',
+  'transientMode', 'allowedMethods', 'catalogProvider',
 ] as const;
 
 const UPDATE_FIELDS = [
@@ -56,6 +56,7 @@ const FULL_CREATE: Required<{ [K in typeof CREATE_FIELDS[number]]: CreateSourceI
   dedupCustomHeader: 'X-Idempotency-Key',
   transientMode: false,
   allowedMethods: ['POST'],
+  catalogProvider: 'stripe',
 };
 
 const FULL_UPDATE: Required<{ [K in typeof UPDATE_FIELDS[number]]: UpdateSourceInput[K] }> = {
@@ -89,9 +90,16 @@ describe('the fields this SDK sends are the fields the API accepts', () => {
     expect(Object.keys(FULL_UPDATE).sort()).toEqual([...UPDATE_FIELDS].sort());
   });
 
-  it('create and update differ only by slug and isActive', () => {
-    expect(CREATE_FIELDS.filter((f) => !UPDATE_FIELDS.includes(f as never))).toEqual(['slug']);
+  // slug and catalogProvider are set once: the API's update schema is strict and has neither.
+  it('create and update differ only by slug, catalogProvider and isActive', () => {
+    expect(CREATE_FIELDS.filter((f) => !UPDATE_FIELDS.includes(f as never))).toEqual(['slug', 'catalogProvider']);
     expect(UPDATE_FIELDS.filter((f) => !CREATE_FIELDS.includes(f as never))).toEqual(['isActive']);
+  });
+
+  it('update has no catalogProvider', () => {
+    // @ts-expect-error - a source's catalog entry cannot be changed after create
+    const update: UpdateSourceInput = { catalogProvider: 'plaid' };
+    expect(update).toBeDefined();
   });
 
   // slug is part of the ingest URL and cannot be changed afterwards, so create requires it.

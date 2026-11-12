@@ -125,6 +125,10 @@ export class SourcesResource extends BaseResource {
    * without a secret (`wise`, `aws-sns`), public-key providers (`discord`, `sendgrid`...),
    * vendor-issued secrets (`stripe`, `standard-webhooks`...) and secrets issued after
    * registration (`asana`, `notion`). Rotate those at the vendor, then `update()` the source.
+   *
+   * Not retried on a timeout, 5xx or dropped connection, even with an `idempotencyKey`: the API
+   * does not deduplicate rotations, and a repeated rotation replaces the secret the first one
+   * returned. A 429 is still retried.
    */
   async rotateSecret(
     id: string,

@@ -31,6 +31,8 @@ import {
   HookbaseRateLimitError,
   HookbaseTimeoutError,
   HookbaseNetworkError,
+  extractErrorCode,
+  extractErrorDetails,
   extractErrorMessage,
   extractValidationErrors,
 } from './errors';
@@ -41,7 +43,7 @@ const DEFAULT_RETRIES = 3;
 // Must match the version in package.json; version-sync.test.ts fails if it drifts. It rode at
 // 2.1.0 through the 2.x and 3.0 releases, so every User-Agent those published reported the
 // wrong SDK version to the API.
-const SDK_VERSION = '4.1.0';
+const SDK_VERSION = '4.2.0';
 
 /**
  * Hookbase API client
@@ -175,10 +177,12 @@ export class Hookbase implements ApiClient {
     const idempotencyKey = options?.requestOptions?.idempotencyKey;
     // A POST that failed on a 5xx, a timeout or a dropped connection may still have been carried
     // out, so repeating it can create the thing twice (a second rotation, a second replay, a
-    // second send). Only an idempotency key makes that safe, so without one a POST is not
-    // retried on those failures, even when the caller passes `retries`. A 429 is still
-    // retried: the API refused it, so nothing ran.
-    const retryAmbiguousFailures = method.toUpperCase() !== 'POST' || !!idempotencyKey;
+    // second send). Only the API's deduplication makes that safe, and it deduplicates on
+    // `Idempotency-Key` only when sending an event. Any other POST ignores the key, so a key there
+    // does not make it retryable. Neither does passing `retries`. A 429 is still retried: the
+    // API refused it, so nothing ran.
+    const retryAmbiguousFailures =
+      method.toUpperCase() !== 'POST' || (!!idempotencyKey?.trim() && deduplicatedPost(path));
     // A negative count skipped the loop entirely and threw `undefined` without sending anything.
     const retries = Math.max(0, options?.requestOptions?.retries ?? this.retries);
     const signal = options?.requestOptions?.signal;
@@ -276,7 +280,7 @@ export class Hookbase implements ApiClient {
         }
 
         // A connection that was never established cannot have reached the server, so resending
-        // it is safe even for a POST without an idempotency key.
+        // it is safe even for a POST the API does not deduplicate.
         if (!retryAmbiguousFailures && !neverSent(error)) {
           throw error;
         }
@@ -364,19 +368,25 @@ export class Hookbase implements ApiClient {
         case 401:
           throw new HookbaseAuthenticationError(
             extractErrorMessage(errorBody, 'Authentication failed'),
-            requestId
+            requestId,
+            extractErrorCode(errorBody, 'authentication_error'),
+            extractErrorDetails(errorBody)
           );
 
         case 403:
           throw new HookbaseForbiddenError(
             extractErrorMessage(errorBody, 'Access forbidden'),
-            requestId
+            requestId,
+            extractErrorCode(errorBody, 'forbidden'),
+            extractErrorDetails(errorBody)
           );
 
         case 404:
           throw new HookbaseNotFoundError(
             extractErrorMessage(errorBody, 'Resource not found'),
-            requestId
+            requestId,
+            extractErrorCode(errorBody, 'not_found'),
+            extractErrorDetails(errorBody)
           );
 
         case 400:
@@ -385,7 +395,9 @@ export class Hookbase implements ApiClient {
             extractErrorMessage(errorBody, 'Validation failed'),
             requestId,
             extractValidationErrors(errorBody),
-            response.status
+            response.status,
+            extractErrorCode(errorBody, 'validation_error'),
+            extractErrorDetails(errorBody)
           );
 
         case 429:
@@ -393,7 +405,9 @@ export class Hookbase implements ApiClient {
           throw new HookbaseRateLimitError(
             extractErrorMessage(errorBody, 'Rate limit exceeded'),
             retryAfter,
-            requestId
+            requestId,
+            extractErrorCode(errorBody, 'rate_limit_exceeded'),
+            extractErrorDetails(errorBody)
           );
 
         default:
@@ -459,6 +473,19 @@ export function parseRetryAfter(header: string | null, now: number = Date.now())
   const date = Date.parse(value);
   if (!Number.isNaN(date)) return Math.max(0, Math.ceil((date - now) / 1000));
   return DEFAULT_RETRY_AFTER_SECONDS;
+}
+
+/**
+ * POST paths where the API deduplicates on `Idempotency-Key` (api/src/routes/send-event.ts and
+ * v1-events.ts), so resending one that carries a key is safe. Every other POST ignores the key.
+ * send-event is also mounted under `/api/organizations/:orgId`.
+ */
+const IDEMPOTENT_POST_PATH = /^(?:\/api(?:\/organizations\/[^/]+)?\/send-event|\/v1\/events)$/;
+
+/** Whether the API deduplicates a POST to `path`, matched without its query string. */
+function deduplicatedPost(path: string): boolean {
+  const end = path.search(/[?#]/);
+  return IDEMPOTENT_POST_PATH.test(end === -1 ? path : path.slice(0, end));
 }
 
 /** Connection-phase failures: the request never reached the server. */

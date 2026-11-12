@@ -2,9 +2,11 @@ import { HookbaseError } from '../errors';
 import type { CreateApiKeyInput } from './apiKeys';
 import type {
   Application,
+  BridgeDryRunResult,
   CircuitStatusInfo,
   Delivery,
   DeliveryDetail,
+  DestinationDeliveryTestResult,
   DestinationTestResult,
   CreateDestinationInput,
   CreateEndpointInput,
@@ -316,6 +318,7 @@ export function withEndpointAliases<T extends Endpoint>(endpoint: T): T {
  * Mutates and returns the same object, so a field the API adds later still reaches the caller.
  */
 export function withOutboundMessageAliases<T extends OutboundMessage>(message: T): T {
+  message.holdExpiresAt ??= null;
   message.messageId = message.eventId;
   message.lastError = message.lastErrorMessage ?? null;
   message.lastAttemptAt ??= null;
@@ -389,6 +392,7 @@ export function withDeliveryAliases<T extends Delivery>(delivery: T): T {
   // A delivery the worker has not counted yet arrives with attemptCount/maxAttempts null.
   delivery.attemptCount ??= 0;
   delivery.maxAttempts ??= 5;
+  delivery.holdExpiresAt ??= null;
   delivery.statusCode = delivery.responseStatus ?? null;
   delivery.attempts = delivery.attemptCount;
   delivery.error = delivery.errorMessage ?? null;
@@ -421,10 +425,23 @@ export function withTransformTestAliases<T extends TransformTestResult>(result: 
   return result;
 }
 
-/** `POST /destinations/:id/test` sends `status`/`latencyMs`; the SDK returned `statusCode`/`duration`. */
+/**
+ * `POST /destinations/:id/test` sends `status`/`latencyMs`; the SDK returned `statusCode`/`duration`.
+ *
+ * A bridge's dry run has neither. When its stored config is invalid the API answers with only
+ * `success`, `dryRun` and `error`, so the dry-run fields are filled in to match the declared shape.
+ */
 export function withDestinationTestAliases<T extends DestinationTestResult>(result: T): T {
-  result.statusCode = result.status;
-  result.duration = result.latencyMs;
+  if (result.dryRun === true) {
+    const dryRun = result as BridgeDryRunResult;
+    dryRun.eventType ??= null;
+    dryRun.eventTypeExists ??= false;
+    dryRun.matchingEndpoints ??= 0;
+    return result;
+  }
+  const test = result as DestinationDeliveryTestResult;
+  test.statusCode = test.status;
+  test.duration = test.latencyMs;
   return result;
 }
 

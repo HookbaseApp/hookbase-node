@@ -182,6 +182,17 @@ export interface Endpoint {
   circuitFailureThreshold: number;
   circuitSuccessThreshold: number;
   circuitCooldownSeconds: number;
+  /**
+   * Whether messages wait as `held` while the circuit is open, instead of each spending attempts
+   * against an endpoint known to be down. Defaults to true. False does not mean retrying: a message
+   * that meets the open circuit is then dead-lettered at once (reason `circuit_breaker_open`).
+   * Messages on a FIFO endpoint, replays and DLQ retries are neither held nor dead-lettered early.
+   */
+  holdOnCircuitOpen: boolean;
+  /** Get only. Messages held right now, counted up to 10,000. */
+  heldCount?: number;
+  /** Get only. True when there are more held messages than `heldCount` counted. */
+  heldCountCapped?: boolean;
 
   totalMessages: number;
   totalSuccesses: number;
@@ -281,6 +292,15 @@ export interface CreateEndpointInput {
   /** Seconds an open circuit waits before it probes again, 10-3600. */
   circuitCooldownSeconds?: number;
   /**
+   * Hold messages while the circuit is open (status `held`) instead of letting each spend attempts
+   * against an endpoint known to be down. Held messages are sent once it recovers, and dead-lettered
+   * if it hasn't by the end of their retry window. The API defaults to true.
+   *
+   * False does not mean retrying: a message that meets the open circuit is then dead-lettered at
+   * once (reason `circuit_breaker_open`). See `Endpoint.holdOnCircuitOpen` for the exceptions.
+   */
+  holdOnCircuitOpen?: boolean;
+  /**
    * `hmac-sha256` (the API default) or `ed25519`. An `ed25519` endpoint is created with a key pair
    * Hookbase generates; the response carries `publicKey` and no `secret`.
    */
@@ -324,6 +344,8 @@ export interface UpdateEndpointInput {
   circuitSuccessThreshold?: number;
   /** Seconds an open circuit waits before it probes again, 10-3600. */
   circuitCooldownSeconds?: number;
+  /** Hold messages while the circuit is open (see `CreateEndpointInput.holdOnCircuitOpen`). */
+  holdOnCircuitOpen?: boolean;
   /**
    * Switch the signature scheme. A different scheme generates a new key of that kind at once, bumps
    * `secretVersion` and ends any rotation grace period (the previous key stops signing). Switching
@@ -615,6 +637,12 @@ export interface ListSubscriptionsParams extends PaginationParams {
 /**
  * Outbound message status. Open-ended: the statuses below are the ones the API uses today, and a
  * status added later still type-checks rather than being treated as impossible.
+ *
+ * - `awaiting_retry`: between attempts, waiting for the retry sweep.
+ * - `awaiting_pull`: on a polling endpoint, waiting for its consumer to pull it.
+ * - `fifo_waiting`: on a FIFO endpoint, queued behind the messages sent before it.
+ * - `held`: the endpoint's circuit is open and it holds messages (`holdOnCircuitOpen`); sent when
+ *   the circuit recovers, or dead-lettered at `holdExpiresAt`.
  */
 export type MessageStatus =
   | 'pending'
@@ -622,6 +650,9 @@ export type MessageStatus =
   | 'success'
   | 'failed'
   | 'awaiting_retry'
+  | 'awaiting_pull'
+  | 'fifo_waiting'
+  | 'held'
   | 'exhausted'
   | 'dlq'
   | (string & {});
@@ -656,6 +687,11 @@ export interface OutboundMessage {
   maxAttempts: number;
   lastResponseStatus: number | null;
   lastErrorMessage: string | null;
+  /**
+   * When a `held` message's hold ends. It is released to be sent as soon as the endpoint's circuit
+   * recovers; one still held at this time goes to the DLQ. Null for every other status.
+   */
+  holdExpiresAt: string | null;
   createdAt: string;
   completedAt: string | null;
 
@@ -679,6 +715,17 @@ export interface OutboundMessage {
   endpointDescription?: string | null;
   /** Get only. The stored payload, or null once retention has removed it. */
   payload?: unknown;
+  /** Get only. W3C trace id of the send this message belongs to. */
+  traceId?: string | null;
+  /** Get only. The version label the payload was published in; null for an unversioned event type. */
+  eventVersion?: string | null;
+  /** Get only. The version the latest attempt delivered, after conversion to the subscription's pin. */
+  deliveredEventVersion?: string | null;
+  /**
+   * Get only. The inbound event and delivery a bridge destination published this message's event
+   * from, or null when the event was not sent by a bridge.
+   */
+  bridge?: OutboundMessageBridge | null;
 
   /** @deprecated The API calls this `eventId`; the SDK mirrors it here. Read `eventId`. */
   messageId: string;
@@ -694,6 +741,16 @@ export interface OutboundMessage {
   deliveredAt: string | null;
   /** @deprecated The API has never sent this; always null. */
   updatedAt: string | null;
+}
+
+/** Where a bridge destination's outbound event came from (`OutboundMessage.bridge`). */
+export interface OutboundMessageBridge {
+  /** The inbound event the bridge published. */
+  inboundEventId: string;
+  /** The inbound delivery that published it; null if the API could not link it. */
+  deliveryId: string | null;
+  /** How many bridges the event has crossed, counting this one; null if not recorded. */
+  hop: number | null;
 }
 
 /** One delivery attempt, as `GET /outbound-messages/:id/attempts` returns it. */
@@ -764,6 +821,14 @@ export interface SendMessageResponse {
   messagesQueued: number;
   /** The endpoints the event was queued for. */
   endpoints: Array<{ id: string; url: string }>;
+  /**
+   * How many of the queued messages were created `held`, because their endpoint's circuit is open
+   * and it holds messages (`holdOnCircuitOpen`). Absent when none were, and on a repeated
+   * idempotency key. The response does not say which endpoints' messages are held.
+   */
+  messagesHeld?: number;
+  /** The version label the payload was published in. Absent for an unversioned event type. */
+  eventVersion?: string;
 
   /** @deprecated The API calls this `eventId`; the SDK mirrors it here. Read `eventId`. */
   messageId: string;
@@ -771,11 +836,18 @@ export interface SendMessageResponse {
    * @deprecated The send response carries endpoints, not outbound messages: each entry's `id`
    * is the ENDPOINT id, not a message id. Read `endpoints`, and list messages by `eventId`'s
    * endpoints for message ids.
+   *
+   * `status` is derived from `messagesHeld`, the only status the response carries: `held` when
+   * every message was held, `pending` when none was, and `unknown` when only some were (the
+   * response does not say which). On a repeated idempotency key the API omits `messagesHeld`, so
+   * every entry reads `pending` there even if messages were held. `pending` also covers messages
+   * that started as `awaiting_pull` (polling endpoints) or `fifo_waiting` (FIFO endpoints). List
+   * the messages for their real status.
    */
   outboundMessages: Array<{
     id: string;
     endpointId: string;
-    status: MessageStatus;
+    status: MessageStatus | 'unknown';
   }>;
 }
 
@@ -989,6 +1061,11 @@ export interface Source {
   name: string;
   slug: string;
   provider: SourceProvider | null;
+  /**
+   * The provider-catalog entry (`providers.list()` id) the source was made from, or null. Set on
+   * create only; nothing changes it later. Null on sources created before the API recorded it.
+   */
+  catalogProvider: string | null;
   description: string | null;
   /** Whether a signing secret is set. The secret itself is not returned here. */
   hasSigningSecret: boolean;
@@ -1062,6 +1139,15 @@ export interface CreateSourceInput {
   /** Required: it forms the ingest URL, `/ingest/<org>/<slug>`, and cannot be changed later. */
   slug: string;
   provider?: SourceProvider;
+  /**
+   * The provider-catalog entry (`providers.list()` id) this source is made from, max 100
+   * characters; an id the catalog doesn't have is a 400. Set it when the source is for a catalog
+   * vendor, even one saved under another `provider` (several are saved as Custom HMAC). For those,
+   * the vendor's published IP ranges in `ipAllowlist` no longer count as a verified sender for
+   * bridge destinations, since the vendor sends every customer's webhooks from them. Create only:
+   * it cannot be changed later.
+   */
+  catalogProvider?: string | null;
   description?: string;
   /**
    * What to supply depends on the provider (the catalog's `signatureVerification.secretSource`;
@@ -1255,7 +1341,8 @@ export type DestinationType =
   | 'eventbridge'
   | 'servicebus'
   | 'pubsub'
-  | 'oci_queue';
+  | 'oci_queue'
+  | 'bridge';
 
 export interface S3Config {
   bucket: string;
@@ -1293,6 +1380,34 @@ export interface AzureBlobConfig {
 }
 
 export type WarehouseConfig = S3Config | R2Config | GCSConfig | AzureBlobConfig;
+
+/**
+ * A bridge destination's config (`type: 'bridge'`). A bridge publishes each delivery as an outbound
+ * event to the endpoints subscribed to its event type, instead of sending it to a URL.
+ *
+ * Each mode's fields are refused in the other mode, and any other key is refused (400).
+ */
+export interface BridgeConfig {
+  /** `fixed`: always publish `eventType`. `field`: publish the type named in each payload. */
+  eventTypeSource: 'fixed' | 'field';
+  /** Fixed mode, required: an existing, enabled outbound event type. */
+  eventType?: string;
+  /** Field mode, required: a dot path into the payload (max 5 segments, e.g. `data.type`). */
+  eventTypeField?: string;
+  /**
+   * Field mode, optional: put in front of the field's value (e.g. `stripe.`), max 50 characters,
+   * lowercase letters, digits and dots, starting with a letter.
+   */
+  eventTypePrefix?: string;
+  /** Publish to this application's endpoints only. Unset or null: every application's. */
+  applicationId?: string | null;
+  /**
+   * Also publish events whose sender the source did not verify (no valid signature with the
+   * source's own secret, and no IP allowlist that counts). Off by default; turning it on lets
+   * anyone who can reach the source URL publish to your endpoints.
+   */
+  allowUnverifiedSources?: boolean;
+}
 
 export interface FieldMapping {
   source: string;
@@ -1338,7 +1453,20 @@ export interface Destination {
   } | null;
   isActive: boolean;
   useStaticIp: boolean;
-  config: WarehouseConfig | null;
+  /**
+   * Whether the destination has a signing secret. Every `http` destination has one: each delivery
+   * is signed with it (Standard Webhooks headers), so the receiver can check it came from Hookbase.
+   * See `destinations.revealSecret()` and `rotateSecret()`.
+   */
+  hasSigningSecret: boolean;
+  /**
+   * A warehouse destination's config (credentials redacted) or a bridge's. Narrow with `in`
+   * (`'bucket' in config`, `'eventTypeSource' in config`). Queue destinations (`sqs`,
+   * `eventbridge`, `servicebus`, `pubsub`, `oci_queue`) return their own shape here, also redacted,
+   * which the SDK does not type: read it as `config as Record<string, unknown> | null`, or
+   * `config as unknown as YourQueueConfig`.
+   */
+  config: WarehouseConfig | BridgeConfig | null;
   fieldMapping: FieldMapping[] | null;
   batchSize?: number;
   batchWindowSeconds?: number;
@@ -1356,6 +1484,43 @@ export interface Destination {
   updatedAt: string;
 }
 
+/** What `destinations.create` returns: the destination plus the one look at its signing secret. */
+export type DestinationWithSecret = Destination & {
+  /**
+   * The `whsec_` secret that signs this destination's deliveries, in full, this once
+   * (`revealSecret()` shows it again). Null for every type but `http`.
+   */
+  signingSecret: string | null;
+};
+
+/** What `destinations.revealSecret` and `destinations.rotateSecret` return. */
+export interface DestinationSigningSecret {
+  /** The current `whsec_` signing secret. */
+  signingSecret: string;
+  /**
+   * While a rotation's grace period lasts, deliveries are signed with both the previous and the
+   * current secret, and this is when the previous one stops. Null when there is no grace period.
+   */
+  previousSecretExpiresAt: string | null;
+}
+
+export interface RotateDestinationSecretParams {
+  /**
+   * Seconds the previous secret keeps signing alongside the new one, 0-86400. The API defaults to
+   * 3600; 0 retires it at once.
+   */
+  gracePeriodSeconds?: number;
+}
+
+/** Body for `destinations.test`. */
+export interface TestDestinationInput {
+  /**
+   * Bridge destinations only: the sample payload the dry run resolves the event type from. Must be
+   * a JSON object. Other destination types send their own test payload and ignore this.
+   */
+  payload?: Record<string, unknown>;
+}
+
 export interface CreateDestinationInput {
   name: string;
   /**
@@ -1367,7 +1532,7 @@ export interface CreateDestinationInput {
    */
   slug?: string;
   type?: DestinationType;
-  /** Required for `type: 'http'`; warehouse and queue destinations leave it unset. */
+  /** Required for `type: 'http'`; warehouse, queue and bridge destinations leave it unset. */
   url?: string;
   method?: HttpMethod;
   /** Sent as a record — this is the shape the destinations API takes, unlike endpoint headers. */
@@ -1384,7 +1549,11 @@ export interface CreateDestinationInput {
     maxConcurrency?: number;
     queueLimit?: number;
   };
-  config?: WarehouseConfig;
+  /**
+   * Warehouse, queue and bridge destinations: the type's config (`WarehouseConfig`, `BridgeConfig`,
+   * or a queue type's own fields).
+   */
+  config?: WarehouseConfig | BridgeConfig | Record<string, unknown>;
   fieldMapping?: FieldMapping[];
   useStaticIp?: boolean;
   batchSize?: number;
@@ -1424,7 +1593,11 @@ export interface UpdateDestinationInput {
     queueLimit?: number;
   };
   isActive?: boolean;
-  config?: WarehouseConfig;
+  /**
+   * Warehouse, queue and bridge destinations: the type's config (`WarehouseConfig`, `BridgeConfig`,
+   * or a queue type's own fields).
+   */
+  config?: WarehouseConfig | BridgeConfig | Record<string, unknown>;
   fieldMapping?: FieldMapping[];
   useStaticIp?: boolean;
   batchSize?: number;
@@ -1459,11 +1632,14 @@ export interface ListDestinationsParams {
 // ============================================
 
 /**
- * `POST /destinations/:id/test`. A failed test (network error, missing warehouse config) is still
- * a 200, with `success: false` and `error` set and no `status`.
+ * `POST /destinations/:id/test` for an HTTP, warehouse or queue destination: a real test request or
+ * upload. A failed test (network error, missing warehouse config, a queue type, which can't be
+ * tested yet) is still a 200, with `success: false` and `error` set and no `status`.
  */
-export interface DestinationTestResult {
+export interface DestinationDeliveryTestResult {
   success: boolean;
+  /** Absent: only a bridge's test is a dry run. */
+  dryRun?: false;
   /** HTTP status the destination answered with. */
   status?: number;
   latencyMs?: number;
@@ -1476,6 +1652,41 @@ export interface DestinationTestResult {
   /** @deprecated The API calls this `latencyMs`; the SDK mirrors it here. */
   duration?: number;
 }
+
+/**
+ * `POST /destinations/:id/test` for a bridge destination: a dry run. It resolves the event type
+ * from the sample payload, checks the type exists and is enabled, and counts the endpoints
+ * subscribed to it. Nothing is published, written or charged.
+ */
+export interface BridgeDryRunResult {
+  /** True when the resolved event type exists and is enabled. */
+  success: boolean;
+  dryRun: true;
+  /** The event type the payload resolved to, or null if it could not be resolved. */
+  eventType: string | null;
+  eventTypeExists: boolean;
+  /**
+   * Endpoints subscribed to the event type (in `applicationId`'s application, if set). An upper
+   * bound: subscription filters and circuit state are not applied.
+   */
+  matchingEndpoints: number;
+  /** Why the event type could not be resolved, or that the bridge's stored config is invalid. */
+  error?: string;
+
+  /** Never set on a dry run; declared so code reading the delivery test's fields still compiles. */
+  status?: undefined;
+  /** Never set on a dry run. */
+  latencyMs?: undefined;
+  /** Never set on a dry run. */
+  responseBody?: undefined;
+  /** @deprecated Never set on a dry run. */
+  statusCode?: undefined;
+  /** @deprecated Never set on a dry run. */
+  duration?: undefined;
+}
+
+/** What `destinations.test` returns. Check `dryRun` to tell a bridge's dry run apart. */
+export type DestinationTestResult = DestinationDeliveryTestResult | BridgeDryRunResult;
 
 export type CircuitStatus = 'closed' | 'open' | 'half_open';
 
@@ -1503,6 +1714,20 @@ export interface Route {
   circuitCooldownSeconds: number | null;
   circuitFailureThreshold: number | null;
   circuitProbeSuccessThreshold: number | null;
+  /**
+   * Whether deliveries wait as `held` while the route's circuit is open, instead of each spending
+   * attempts against a destination known to be down. Defaults to true. False does not mean
+   * retrying: a delivery that meets the open circuit is then dead-lettered at once (reason
+   * `circuit_breaker_open`).
+   *
+   * Takes effect on plans with the circuit breaker. A route with failover destinations, and a
+   * failover or redirected replay delivery, neither holds nor dead-letters early either way.
+   */
+  holdOnCircuitOpen: boolean;
+  /** Get only. Deliveries held right now, counted up to 10,000. */
+  heldCount?: number;
+  /** Get only. True when there are more held deliveries than `heldCount` counted. */
+  heldCountCapped?: boolean;
   notifyOnFailure: boolean;
   notifyOnSuccess: boolean;
   notifyOnRecovery: boolean;
@@ -1544,6 +1769,15 @@ export interface CreateRouteInput {
   failoverDestinationIds?: string[];
   failoverAfterAttempts?: number;
   expectedResponse?: string;
+  /**
+   * Hold deliveries while the route's circuit is open (status `held`) instead of letting each spend
+   * attempts against a destination known to be down. Held deliveries are sent once it recovers, and
+   * dead-lettered if it hasn't by the end of their retry window. The API defaults to true.
+   *
+   * False does not mean retrying: a delivery that meets the open circuit is then dead-lettered at
+   * once (reason `circuit_breaker_open`). See `Route.holdOnCircuitOpen` for where it applies.
+   */
+  holdOnCircuitOpen?: boolean;
 }
 
 export interface UpdateRouteInput {
@@ -1565,6 +1799,8 @@ export interface UpdateRouteInput {
   failoverDestinationIds?: string[] | null;
   failoverAfterAttempts?: number | null;
   expectedResponse?: string | null;
+  /** Hold deliveries while the circuit is open (see `CreateRouteInput.holdOnCircuitOpen`). */
+  holdOnCircuitOpen?: boolean;
 }
 
 export interface ListRoutesParams {
@@ -1679,6 +1915,71 @@ export interface EventDetail {
   deliveries: Delivery[];
 }
 
+/** A known failure pattern a failed delivery matched (`EventDebugDelivery.patternHints`). */
+export interface FailurePatternHint {
+  id: string;
+  category: string;
+  title: string;
+  /** What probably went wrong. */
+  hypothesis: string;
+  suggestedFix: string;
+}
+
+/** One of an event's deliveries, as `events.debug()` returns it. */
+export interface EventDebugDelivery {
+  id: string;
+  status: DeliveryStatus;
+  /** HTTP status the destination answered with, or null. */
+  statusCode: number | null;
+  durationMs: number | null;
+  /** Attempts made so far. */
+  attempt: number | null;
+  maxAttempts: number | null;
+  /** When the next retry is scheduled; null when none is, and while the delivery is `held`. */
+  nextRetryAt: string | null;
+  /**
+   * When a `held` delivery's hold ends. It is released as soon as the route's circuit recovers;
+   * one still held at this time is dead-lettered. Null for every other status.
+   */
+  holdExpiresAt: string | null;
+  error: string | null;
+  responseBody: string | null;
+  responseHeaders: Record<string, string>;
+  /** The payload after the route's transform, or null. */
+  transformedPayload: unknown;
+  routeId: string;
+  destinationId: string;
+  destination: { name: string | null; url: string | null; method: string | null };
+  startedAt: string;
+  completedAt: string | null;
+  /** 0 for the route's own destination, 1+ for its failovers in order. */
+  failoverIndex: number;
+  /** For a failover or replay delivery, the delivery it came from. */
+  parentDeliveryId: string | null;
+  /** Groups deliveries that failed the same way. */
+  fingerprint: string | null;
+  /** The destination's `Retry-After` response header, if it sent one. */
+  retryAfter: string | null;
+  /** How many deliveries share `fingerprint`, or null without one. */
+  clusterCount: number | null;
+  /** Known failure patterns a failed, retrying or held delivery matched. */
+  patternHints: FailurePatternHint[];
+  /**
+   * The route's circuit breaker as it is now. Null when the route has been deleted or disabled,
+   * its destination is disabled, or it no longer takes this event's source: the API reads it from
+   * the routes the source would deliver to now.
+   */
+  routeCircuit: {
+    state: CircuitStatus;
+    openedAt: string | null;
+    cooldownSeconds: number;
+    failureThreshold: number;
+    consecutiveFailures: number;
+  } | null;
+  /** Fields the API adds later still reach you; this also keeps `Record`-style reads compiling. */
+  [key: string]: unknown;
+}
+
 /** `GET /events/:id/debug`: everything needed to reproduce and diagnose one inbound event. */
 export interface EventDebugInfo {
   event: {
@@ -1706,7 +2007,7 @@ export interface EventDebugInfo {
   transient: boolean;
   /** The raw body, truncated to 10,000 characters. */
   rawPayload: string;
-  deliveries: Array<Record<string, unknown>>;
+  deliveries: EventDebugDelivery[];
   timing: Record<string, unknown>;
   filterEvaluations: unknown[];
   recentConfigChanges: { sinceDays: number; entries: unknown[] };
@@ -1763,14 +2064,25 @@ export interface ExportEventsParams {
 
 /**
  * `success` and `retrying` were never values the API sends — a delivered delivery is
- * `delivered`, and one waiting on a retry is `pending` with an `attemptCount` above zero.
+ * `delivered`, and one waiting on a retry is `awaiting_retry` (`pending` with an `attemptCount`
+ * above zero before the API's 0132 migration). The set is the `deliveries.status` CHECK
+ * constraint (api/migrations/pg/0132_inbound_long_retries.sql); `circuit_open` is a route
+ * notification type, not a delivery status.
+ *
+ * - `held`: the route's circuit is open and it holds deliveries (`holdOnCircuitOpen`); sent when
+ *   the circuit recovers, or dead-lettered at `holdExpiresAt`.
+ *
+ * Filtering `deliveries.list` on `pending` also returns `awaiting_retry` and `held` deliveries.
  */
 export type DeliveryStatus =
   | 'pending'
   | 'delivered'
   | 'failed'
+  | 'failed_over'
+  | 'schema_failed'
   | 'throttled'
-  | 'circuit_open'
+  | 'awaiting_retry'
+  | 'held'
   | (string & {});
 
 export interface Delivery {
@@ -1782,7 +2094,13 @@ export interface Delivery {
   status: DeliveryStatus;
   attemptCount: number;
   maxAttempts: number;
+  /** When the next retry is scheduled; null when none is, and while the delivery is `held`. */
   nextRetryAt: string | null;
+  /**
+   * When a `held` delivery's hold ends. It is released as soon as the route's circuit recovers;
+   * one still held at this time is dead-lettered. Null for every other status.
+   */
+  holdExpiresAt: string | null;
   /** HTTP status the destination answered with; null before the first attempt or on a network error. */
   responseStatus: number | null;
   /** R2 key of the stored response, when one was kept. */
@@ -1840,8 +2158,74 @@ export interface ListDeliveriesParams {
 }
 
 export interface ReplayResult {
+  /** The NEW delivery carrying the replay. */
   deliveryId: string;
   message: string;
+  /** True when the payload was edited (`modifiedPayload` or `payloadPatch`). */
+  modified?: boolean;
+  /** True when the replay went to `destinationOverride` instead of the original destination. */
+  destinationOverridden?: boolean;
+  /** True when the replay ran `transformOverride` instead of the route's transform. */
+  transformOverridden?: boolean;
+  /** True when `persistTransform` saved the override as the route's transform. */
+  transformPersisted?: boolean;
+  /** True when `headersOverride` was applied. */
+  headersOverridden?: boolean;
+  /** The destination the replay is going to. */
+  targetDestinationId?: string;
+}
+
+/**
+ * Body for `deliveries.replayWithEdit`: replay one delivery with changes. Every field is optional,
+ * and an empty input replays the delivery as it was.
+ *
+ * A replay into a bridge destination with a destination override or an edited payload or
+ * transform also needs the `events:send` permission.
+ */
+export interface ReplayWithEditInput {
+  /**
+   * Replace the stored payload with this one. Exclusive with `payloadPatch`. Don't use it on a
+   * source that masks or encrypts fields: you only see the masked view, so a full replacement
+   * would send the placeholders on. Use `payloadPatch` there.
+   */
+  modifiedPayload?: unknown;
+  /**
+   * An RFC 7386 JSON merge patch applied to the STORED payload: keys you set are added or replaced
+   * (objects merge recursively), keys set to null are removed. Must be an object, the stored payload
+   * must be a JSON object, and the patch may not change or remove an encrypted field. Exclusive
+   * with `modifiedPayload`.
+   */
+  payloadPatch?: Record<string, unknown>;
+  /** Send the replay to this destination (id or slug, in the same organization) instead. */
+  destinationOverride?: string;
+  /**
+   * Run this transform for the replay instead of the route's. Not saved unless `persistTransform`
+   * is set. Checked like creating a transform (plan, type, formats, compile).
+   */
+  transformOverride?: ReplayTransformOverride;
+  /**
+   * Headers to add or replace on this delivery only, max 50. The framing headers, the signature
+   * headers (`webhook-*`, `x-hookbase-id`, `-timestamp`, `-signature`) and `x-hookbase-hop` are
+   * refused (400).
+   */
+  headersOverride?: Record<string, string>;
+  /**
+   * With `transformOverride`, also save it as the route's transform. The route must already have
+   * one, and the caller needs the `transforms:update` permission.
+   */
+  persistTransform?: boolean;
+}
+
+/** A one-shot transform for `ReplayWithEditInput.transformOverride`. */
+export interface ReplayTransformOverride {
+  code: string;
+  /**
+   * The transform language. Omitted, the route's own transform type is used, and the code is not
+   * compiled before the replay is queued.
+   */
+  type?: TransformType;
+  inputFormat?: ContentFormat;
+  outputFormat?: ContentFormat;
 }
 
 export interface BulkReplayResult {
@@ -1857,10 +2241,19 @@ export interface BulkReplayResult {
 // ============================================
 
 /**
- * The transform engines the API runs (api/src/transforms/validation.ts). `mapping` was never one:
- * the API rejects it with a 400.
+ * The transform engines the API runs (api/src/transforms/catalog.ts). `mapping` was never one:
+ * the API rejects it with a 400. `jq` needs transform isolation on the server; without it the API
+ * answers `TRANSFORM_ENGINE_UNAVAILABLE`. Call `transforms.engines()` to see what a deployment offers.
  */
-export type TransformType = 'jsonata' | 'xslt' | 'liquid' | 'javascript';
+export type TransformType =
+  | 'jsonata'
+  | 'javascript'
+  | 'typescript'
+  | 'liquid'
+  | 'xslt'
+  | 'jmespath'
+  | 'jsonlogic'
+  | 'jq';
 /** Payload formats a transform reads and writes. `form` was never accepted (400). */
 export type ContentFormat = 'json' | 'xml' | 'text';
 
@@ -1913,6 +2306,27 @@ export interface TransformTestInput {
   inputFormat?: ContentFormat;
   outputFormat?: ContentFormat;
   payload: unknown;
+}
+
+/** One transform language, from `GET /transforms/engines`. */
+export interface TransformEngine {
+  type: TransformType;
+  label: string;
+  description: string;
+  /** File extension editors use for this language, without the dot. */
+  fileExtension: string;
+  /** A minimal working transform. */
+  starterCode: string;
+  /** Whether `POST /transforms/generate` supports this language. */
+  aiGenerate: boolean;
+  /** False when this deployment cannot run the language (e.g. jq without transform isolation). */
+  available: boolean;
+}
+
+/** `GET /transforms/engines`. */
+export interface TransformEnginesResponse {
+  engines: TransformEngine[];
+  contentFormats: ContentFormat[];
 }
 
 /**
@@ -2149,6 +2563,8 @@ export interface OutboundStatsSummary {
   failed: number;
   /** Retries handed to the cron sweep between attempts. */
   awaitingRetry: number;
+  /** Waiting while their endpoint's circuit is open; sent when it recovers. */
+  held: number;
   exhausted: number;
   dlq: number;
   total: number;
@@ -2318,6 +2734,11 @@ export interface RequestOptions {
   retries?: number;
   /** Abort signal for cancellation */
   signal?: AbortSignal;
-  /** Idempotency key for safe retries */
+  /**
+   * Sent as the `Idempotency-Key` header. The API deduplicates on it only when sending an event
+   * (`messages.send()`, `POST /api/send-event` and `POST /v1/events`), so only there does it make a
+   * POST safe to retry after a timeout, 5xx or dropped connection. Other endpoints ignore it, and
+   * a POST to them is not retried on those failures whether or not you pass a key.
+   */
   idempotencyKey?: string;
 }
