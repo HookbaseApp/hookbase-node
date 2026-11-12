@@ -182,6 +182,15 @@ export interface Endpoint {
   circuitFailureThreshold: number;
   circuitSuccessThreshold: number;
   circuitCooldownSeconds: number;
+  /**
+   * Whether messages wait as `held` while the circuit is open, instead of each spending attempts
+   * against an endpoint known to be down. Defaults to true.
+   */
+  holdOnCircuitOpen: boolean;
+  /** Get only. Messages held right now, counted up to 10,000. */
+  heldCount?: number;
+  /** Get only. True when there are more held messages than `heldCount` counted. */
+  heldCountCapped?: boolean;
 
   totalMessages: number;
   totalSuccesses: number;
@@ -281,6 +290,12 @@ export interface CreateEndpointInput {
   /** Seconds an open circuit waits before it probes again, 10-3600. */
   circuitCooldownSeconds?: number;
   /**
+   * Hold messages while the circuit is open (status `held`) instead of letting each spend attempts
+   * against an endpoint known to be down. Held messages are sent once it recovers, and dead-lettered
+   * if it hasn't by the end of their retry window. The API defaults to true.
+   */
+  holdOnCircuitOpen?: boolean;
+  /**
    * `hmac-sha256` (the API default) or `ed25519`. An `ed25519` endpoint is created with a key pair
    * Hookbase generates; the response carries `publicKey` and no `secret`.
    */
@@ -324,6 +339,8 @@ export interface UpdateEndpointInput {
   circuitSuccessThreshold?: number;
   /** Seconds an open circuit waits before it probes again, 10-3600. */
   circuitCooldownSeconds?: number;
+  /** Hold messages while the circuit is open (see `CreateEndpointInput.holdOnCircuitOpen`). */
+  holdOnCircuitOpen?: boolean;
   /**
    * Switch the signature scheme. A different scheme generates a new key of that kind at once, bumps
    * `secretVersion` and ends any rotation grace period (the previous key stops signing). Switching
@@ -615,6 +632,12 @@ export interface ListSubscriptionsParams extends PaginationParams {
 /**
  * Outbound message status. Open-ended: the statuses below are the ones the API uses today, and a
  * status added later still type-checks rather than being treated as impossible.
+ *
+ * - `awaiting_retry`: between attempts, waiting for the retry sweep.
+ * - `awaiting_pull`: on a polling endpoint, waiting for its consumer to pull it.
+ * - `fifo_waiting`: on a FIFO endpoint, queued behind the messages sent before it.
+ * - `held`: the endpoint's circuit is open and it holds messages (`holdOnCircuitOpen`); sent when
+ *   the circuit recovers, or dead-lettered at `holdExpiresAt`.
  */
 export type MessageStatus =
   | 'pending'
@@ -622,6 +645,9 @@ export type MessageStatus =
   | 'success'
   | 'failed'
   | 'awaiting_retry'
+  | 'awaiting_pull'
+  | 'fifo_waiting'
+  | 'held'
   | 'exhausted'
   | 'dlq'
   | (string & {});
@@ -656,6 +682,11 @@ export interface OutboundMessage {
   maxAttempts: number;
   lastResponseStatus: number | null;
   lastErrorMessage: string | null;
+  /**
+   * When a `held` message's hold ends. It is released to be sent as soon as the endpoint's circuit
+   * recovers; one still held at this time goes to the DLQ. Null for every other status.
+   */
+  holdExpiresAt: string | null;
   createdAt: string;
   completedAt: string | null;
 
@@ -1503,6 +1534,16 @@ export interface Route {
   circuitCooldownSeconds: number | null;
   circuitFailureThreshold: number | null;
   circuitProbeSuccessThreshold: number | null;
+  /**
+   * Whether deliveries wait as `held` while the route's circuit is open, instead of each spending
+   * attempts against a destination known to be down. Defaults to true. Takes effect on plans with
+   * the circuit breaker.
+   */
+  holdOnCircuitOpen: boolean;
+  /** Get only. Deliveries held right now, counted up to 10,000. */
+  heldCount?: number;
+  /** Get only. True when there are more held deliveries than `heldCount` counted. */
+  heldCountCapped?: boolean;
   notifyOnFailure: boolean;
   notifyOnSuccess: boolean;
   notifyOnRecovery: boolean;
@@ -1544,6 +1585,12 @@ export interface CreateRouteInput {
   failoverDestinationIds?: string[];
   failoverAfterAttempts?: number;
   expectedResponse?: string;
+  /**
+   * Hold deliveries while the route's circuit is open (status `held`) instead of letting each spend
+   * attempts against a destination known to be down. Held deliveries are sent once it recovers, and
+   * dead-lettered if it hasn't by the end of their retry window. The API defaults to true.
+   */
+  holdOnCircuitOpen?: boolean;
 }
 
 export interface UpdateRouteInput {
@@ -1565,6 +1612,8 @@ export interface UpdateRouteInput {
   failoverDestinationIds?: string[] | null;
   failoverAfterAttempts?: number | null;
   expectedResponse?: string | null;
+  /** Hold deliveries while the circuit is open (see `CreateRouteInput.holdOnCircuitOpen`). */
+  holdOnCircuitOpen?: boolean;
 }
 
 export interface ListRoutesParams {
@@ -1763,9 +1812,15 @@ export interface ExportEventsParams {
 
 /**
  * `success` and `retrying` were never values the API sends — a delivered delivery is
- * `delivered`, and one waiting on a retry is `pending` with an `attemptCount` above zero.
- * The set is the `deliveries.status` CHECK constraint (api/migrations/pg/0046_throttling.sql);
- * `circuit_open` is a route notification type, not a delivery status.
+ * `delivered`, and one waiting on a retry is `awaiting_retry` (`pending` with an `attemptCount`
+ * above zero before the API's 0132 migration). The set is the `deliveries.status` CHECK
+ * constraint (api/migrations/pg/0132_inbound_long_retries.sql); `circuit_open` is a route
+ * notification type, not a delivery status.
+ *
+ * - `held`: the route's circuit is open and it holds deliveries (`holdOnCircuitOpen`); sent when
+ *   the circuit recovers, or dead-lettered at `holdExpiresAt`.
+ *
+ * Filtering `deliveries.list` on `pending` also returns `awaiting_retry` and `held` deliveries.
  */
 export type DeliveryStatus =
   | 'pending'
@@ -1774,6 +1829,8 @@ export type DeliveryStatus =
   | 'failed_over'
   | 'schema_failed'
   | 'throttled'
+  | 'awaiting_retry'
+  | 'held'
   | (string & {});
 
 export interface Delivery {
@@ -1785,7 +1842,13 @@ export interface Delivery {
   status: DeliveryStatus;
   attemptCount: number;
   maxAttempts: number;
+  /** When the next retry is scheduled; null when none is, and while the delivery is `held`. */
   nextRetryAt: string | null;
+  /**
+   * When a `held` delivery's hold ends. It is released as soon as the route's circuit recovers;
+   * one still held at this time is dead-lettered. Null for every other status.
+   */
+  holdExpiresAt: string | null;
   /** HTTP status the destination answered with; null before the first attempt or on a network error. */
   responseStatus: number | null;
   /** R2 key of the stored response, when one was kept. */
@@ -2182,6 +2245,8 @@ export interface OutboundStatsSummary {
   failed: number;
   /** Retries handed to the cron sweep between attempts. */
   awaitingRetry: number;
+  /** Waiting while their endpoint's circuit is open; sent when it recovers. */
+  held: number;
   exhausted: number;
   dlq: number;
   total: number;
