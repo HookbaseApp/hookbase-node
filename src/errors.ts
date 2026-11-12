@@ -103,8 +103,14 @@ export class HookbaseApiError extends HookbaseError {
  * Error thrown when authentication fails
  */
 export class HookbaseAuthenticationError extends HookbaseApiError {
-  constructor(message: string = 'Authentication failed', requestId?: string) {
-    super(message, 401, 'authentication_error', requestId);
+  constructor(
+    message: string = 'Authentication failed',
+    requestId?: string,
+    /** The API's own code when it sent one. */
+    code: string = 'authentication_error',
+    details?: Record<string, unknown>
+  ) {
+    super(message, 401, code, requestId, details);
     this.name = 'HookbaseAuthenticationError';
     Object.setPrototypeOf(this, HookbaseAuthenticationError.prototype);
   }
@@ -114,8 +120,17 @@ export class HookbaseAuthenticationError extends HookbaseApiError {
  * Error thrown when the request is forbidden
  */
 export class HookbaseForbiddenError extends HookbaseApiError {
-  constructor(message: string = 'Access forbidden', requestId?: string) {
-    super(message, 403, 'forbidden', requestId);
+  constructor(
+    message: string = 'Access forbidden',
+    requestId?: string,
+    /**
+     * The API's own code when it sent one: a plan refusal is a 403 with `LIMIT_EXCEEDED`,
+     * `FEATURE_DISABLED` or `PLAN_REQUIRED`.
+     */
+    code: string = 'forbidden',
+    details?: Record<string, unknown>
+  ) {
+    super(message, 403, code, requestId, details);
     this.name = 'HookbaseForbiddenError';
     Object.setPrototypeOf(this, HookbaseForbiddenError.prototype);
   }
@@ -125,8 +140,14 @@ export class HookbaseForbiddenError extends HookbaseApiError {
  * Error thrown when a resource is not found
  */
 export class HookbaseNotFoundError extends HookbaseApiError {
-  constructor(message: string = 'Resource not found', requestId?: string) {
-    super(message, 404, 'not_found', requestId);
+  constructor(
+    message: string = 'Resource not found',
+    requestId?: string,
+    /** The API's own code when it sent one. */
+    code: string = 'not_found',
+    details?: Record<string, unknown>
+  ) {
+    super(message, 404, code, requestId, details);
     this.name = 'HookbaseNotFoundError';
     Object.setPrototypeOf(this, HookbaseNotFoundError.prototype);
   }
@@ -143,9 +164,12 @@ export class HookbaseValidationError extends HookbaseApiError {
     requestId?: string,
     validationErrors?: Record<string, string[]>,
     /** 400 or 422; a 422 used to be reported as 400. */
-    status: number = 400
+    status: number = 400,
+    /** The API's own code when it sent one. */
+    code: string = 'validation_error',
+    details?: Record<string, unknown>
   ) {
-    super(message, status, 'validation_error', requestId, { validationErrors });
+    super(message, status, code, requestId, { ...details, validationErrors });
     this.name = 'HookbaseValidationError';
     this.validationErrors = validationErrors;
     Object.setPrototypeOf(this, HookbaseValidationError.prototype);
@@ -161,9 +185,12 @@ export class HookbaseRateLimitError extends HookbaseApiError {
   constructor(
     message: string = 'Rate limit exceeded',
     retryAfter: number = 60,
-    requestId?: string
+    requestId?: string,
+    /** The API's own code when it sent one. */
+    code: string = 'rate_limit_exceeded',
+    details?: Record<string, unknown>
   ) {
-    super(message, 429, 'rate_limit_exceeded', requestId, { retryAfter });
+    super(message, 429, code, requestId, { ...details, retryAfter });
     this.name = 'HookbaseRateLimitError';
     this.retryAfter = retryAfter;
     Object.setPrototypeOf(this, HookbaseRateLimitError.prototype);

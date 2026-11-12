@@ -31,6 +31,8 @@ import {
   HookbaseRateLimitError,
   HookbaseTimeoutError,
   HookbaseNetworkError,
+  extractErrorCode,
+  extractErrorDetails,
   extractErrorMessage,
   extractValidationErrors,
 } from './errors';
@@ -366,19 +368,25 @@ export class Hookbase implements ApiClient {
         case 401:
           throw new HookbaseAuthenticationError(
             extractErrorMessage(errorBody, 'Authentication failed'),
-            requestId
+            requestId,
+            extractErrorCode(errorBody, 'authentication_error'),
+            extractErrorDetails(errorBody)
           );
 
         case 403:
           throw new HookbaseForbiddenError(
             extractErrorMessage(errorBody, 'Access forbidden'),
-            requestId
+            requestId,
+            extractErrorCode(errorBody, 'forbidden'),
+            extractErrorDetails(errorBody)
           );
 
         case 404:
           throw new HookbaseNotFoundError(
             extractErrorMessage(errorBody, 'Resource not found'),
-            requestId
+            requestId,
+            extractErrorCode(errorBody, 'not_found'),
+            extractErrorDetails(errorBody)
           );
 
         case 400:
@@ -387,7 +395,9 @@ export class Hookbase implements ApiClient {
             extractErrorMessage(errorBody, 'Validation failed'),
             requestId,
             extractValidationErrors(errorBody),
-            response.status
+            response.status,
+            extractErrorCode(errorBody, 'validation_error'),
+            extractErrorDetails(errorBody)
           );
 
         case 429:
@@ -395,7 +405,9 @@ export class Hookbase implements ApiClient {
           throw new HookbaseRateLimitError(
             extractErrorMessage(errorBody, 'Rate limit exceeded'),
             retryAfter,
-            requestId
+            requestId,
+            extractErrorCode(errorBody, 'rate_limit_exceeded'),
+            extractErrorDetails(errorBody)
           );
 
         default:

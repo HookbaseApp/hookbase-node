@@ -665,6 +665,12 @@ Behaviour changes:
   `endpoints.rotateSecret()`, `deliveries.replay()` or `dlq.retry()`, the key is still sent but
   ignored, and a retry could run the call twice: a second rotation replaces the secret the first
   returned. 429s and refused connections are still retried.
+- `HookbaseAuthenticationError`, `HookbaseForbiddenError`, `HookbaseNotFoundError`,
+  `HookbaseValidationError` and `HookbaseRateLimitError` keep the API's own `code` and `details`.
+  They used to replace them with a fixed code (`forbidden`, `not_found`, ...), which they still use
+  when the API sends none. A plan refusal is a `HookbaseForbiddenError` with `code`
+  `LIMIT_EXCEEDED`, `FEATURE_DISABLED` or `PLAN_REQUIRED`. Code that compares `error.code` with
+  the fixed values should check `instanceof` instead.
 
 ## Upgrading to 4.1
 
