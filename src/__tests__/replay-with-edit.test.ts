@@ -18,6 +18,14 @@ function jsonResponse(data: unknown, status = 200) {
   };
 }
 
+/** A 429 the client may retry at once. */
+function rateLimited() {
+  return {
+    ...jsonResponse({ error: 'slow down' }, 429),
+    headers: new Headers({ 'content-type': 'application/json', 'retry-after': '0' }),
+  };
+}
+
 function call(mockFetch: ReturnType<typeof vi.fn>, i = 0) {
   const [url, init] = mockFetch.mock.calls[i];
   return {
@@ -99,6 +107,28 @@ describe('deliveries.replayWithEdit', () => {
 
     await expect(retrying.deliveries.replayWithEdit('del_1', { payloadPatch: { a: 1 } })).rejects.toMatchObject({ status: 503 });
     expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  // The API doesn't deduplicate replays: a retried replay that had gone through is delivered twice.
+  it('is not retried after a 502 even with an idempotencyKey, which is not sent', async () => {
+    const retrying = new Hookbase({ apiKey: 'k', fetch: mockFetch, retries: 3 });
+    mockFetch.mockResolvedValueOnce(jsonResponse({ error: 'boom' }, 502));
+
+    await expect(
+      retrying.deliveries.replayWithEdit('del_1', { payloadPatch: { a: 1 } }, { idempotencyKey: 'rep_1', retries: 3 })
+    ).rejects.toMatchObject({ status: 502 });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(call(mockFetch).headers['Idempotency-Key']).toBeUndefined();
+  });
+
+  it('still retries a 429, which ran nothing', async () => {
+    const retrying = new Hookbase({ apiKey: 'k', fetch: mockFetch, retries: 2 });
+    mockFetch.mockResolvedValueOnce(rateLimited()).mockResolvedValueOnce(jsonResponse(replayed));
+
+    const result = await retrying.deliveries.replayWithEdit('del_1', { payloadPatch: { a: 1 } }, { idempotencyKey: 'rep_1' });
+
+    expect(result.deliveryId).toBe('del_new');
+    expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 
   it('leaves replay() as it was: no body', async () => {

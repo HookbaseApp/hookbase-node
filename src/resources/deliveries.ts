@@ -1,5 +1,5 @@
 import { HookbaseError } from '../errors';
-import { BaseResource, type ApiClient } from './base';
+import { BaseResource, withoutIdempotencyKey, type ApiClient } from './base';
 import { withDeliveryAliases, withDeliveryDetailAliases } from './wire';
 import type {
   Delivery,
@@ -103,8 +103,9 @@ export class DeliveriesResource extends BaseResource {
    * stored payload with `payloadPatch`), another destination, a one-shot transform, or extra
    * headers. The replay is a new delivery; the original is left as it was.
    *
-   * Not retried on a timeout or 5xx: a replay that did go through and is then repeated is
-   * delivered twice.
+   * Never retried after a timeout, 5xx or dropped connection, even with an `idempotencyKey`: the
+   * API does not deduplicate replays, so the key is not sent, and a replay that went through and
+   * was repeated would be delivered twice. A 429 is still retried.
    *
    * @throws HookbaseError, before any request, if both `modifiedPayload` and `payloadPatch` are set.
    */
@@ -122,7 +123,7 @@ export class DeliveriesResource extends BaseResource {
     return this.client.request<ReplayResult>(
       'POST',
       `/api/deliveries/${encodeURIComponent(deliveryId)}/replay`,
-      { body: input, requestOptions: options }
+      { body: input, requestOptions: withoutIdempotencyKey(options) }
     );
   }
 

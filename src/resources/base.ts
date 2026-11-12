@@ -113,3 +113,18 @@ export function splitParams<P extends object>(
   }
   return [undefined, paramsOrOptions as RequestOptions | undefined];
 }
+
+/**
+ * `options` without `idempotencyKey`, for a POST the API does not deduplicate (only send-event
+ * reads the header). The client retries a POST after a timeout, 5xx or dropped connection only
+ * when it carries a key, so a key here would let it repeat a call that may already have run. A 429
+ * is still retried, since the API ran nothing.
+ */
+export function withoutIdempotencyKey(
+  options: RequestOptions | undefined
+): RequestOptions | undefined {
+  if (!options?.idempotencyKey) return options;
+  const rest = { ...options };
+  delete rest.idempotencyKey;
+  return rest;
+}

@@ -184,7 +184,9 @@ export interface Endpoint {
   circuitCooldownSeconds: number;
   /**
    * Whether messages wait as `held` while the circuit is open, instead of each spending attempts
-   * against an endpoint known to be down. Defaults to true.
+   * against an endpoint known to be down. Defaults to true. False does not mean retrying: a message
+   * that meets the open circuit is then dead-lettered at once (reason `circuit_breaker_open`).
+   * Messages on a FIFO endpoint, replays and DLQ retries are neither held nor dead-lettered early.
    */
   holdOnCircuitOpen: boolean;
   /** Get only. Messages held right now, counted up to 10,000. */
@@ -293,6 +295,9 @@ export interface CreateEndpointInput {
    * Hold messages while the circuit is open (status `held`) instead of letting each spend attempts
    * against an endpoint known to be down. Held messages are sent once it recovers, and dead-lettered
    * if it hasn't by the end of their retry window. The API defaults to true.
+   *
+   * False does not mean retrying: a message that meets the open circuit is then dead-lettered at
+   * once (reason `circuit_breaker_open`). See `Endpoint.holdOnCircuitOpen` for the exceptions.
    */
   holdOnCircuitOpen?: boolean;
   /**
@@ -834,13 +839,15 @@ export interface SendMessageResponse {
    *
    * `status` is derived from `messagesHeld`, the only status the response carries: `held` when
    * every message was held, `pending` when none was, and `unknown` when only some were (the
-   * response does not say which). `pending` also covers messages that started as `awaiting_pull`
-   * (polling endpoints) or `fifo_waiting` (FIFO endpoints); list the messages for their status.
+   * response does not say which). On a repeated idempotency key the API omits `messagesHeld`, so
+   * every entry reads `pending` there even if messages were held. `pending` also covers messages
+   * that started as `awaiting_pull` (polling endpoints) or `fifo_waiting` (FIFO endpoints). List
+   * the messages for their real status.
    */
   outboundMessages: Array<{
     id: string;
     endpointId: string;
-    status: MessageStatus;
+    status: MessageStatus | 'unknown';
   }>;
 }
 
@@ -1453,9 +1460,11 @@ export interface Destination {
    */
   hasSigningSecret: boolean;
   /**
-   * A warehouse destination's config (credentials redacted) or a bridge's. Queue destinations
-   * (`sqs`, `eventbridge`, `servicebus`, `pubsub`, `oci_queue`) return their own shape here, also
-   * redacted; cast it.
+   * A warehouse destination's config (credentials redacted) or a bridge's. Narrow with `in`
+   * (`'bucket' in config`, `'eventTypeSource' in config`). Queue destinations (`sqs`,
+   * `eventbridge`, `servicebus`, `pubsub`, `oci_queue`) return their own shape here, also redacted,
+   * which the SDK does not type: read it as `config as Record<string, unknown> | null`, or
+   * `config as unknown as YourQueueConfig`.
    */
   config: WarehouseConfig | BridgeConfig | null;
   fieldMapping: FieldMapping[] | null;
@@ -1707,8 +1716,12 @@ export interface Route {
   circuitProbeSuccessThreshold: number | null;
   /**
    * Whether deliveries wait as `held` while the route's circuit is open, instead of each spending
-   * attempts against a destination known to be down. Defaults to true. Takes effect on plans with
-   * the circuit breaker.
+   * attempts against a destination known to be down. Defaults to true. False does not mean
+   * retrying: a delivery that meets the open circuit is then dead-lettered at once (reason
+   * `circuit_breaker_open`).
+   *
+   * Takes effect on plans with the circuit breaker. A route with failover destinations, and a
+   * failover or redirected replay delivery, neither holds nor dead-letters early either way.
    */
   holdOnCircuitOpen: boolean;
   /** Get only. Deliveries held right now, counted up to 10,000. */
@@ -1760,6 +1773,9 @@ export interface CreateRouteInput {
    * Hold deliveries while the route's circuit is open (status `held`) instead of letting each spend
    * attempts against a destination known to be down. Held deliveries are sent once it recovers, and
    * dead-lettered if it hasn't by the end of their retry window. The API defaults to true.
+   *
+   * False does not mean retrying: a delivery that meets the open circuit is then dead-lettered at
+   * once (reason `circuit_breaker_open`). See `Route.holdOnCircuitOpen` for where it applies.
    */
   holdOnCircuitOpen?: boolean;
 }
@@ -1948,7 +1964,11 @@ export interface EventDebugDelivery {
   clusterCount: number | null;
   /** Known failure patterns a failed, retrying or held delivery matched. */
   patternHints: FailurePatternHint[];
-  /** The route's circuit breaker as it is now; null if the route has been deleted. */
+  /**
+   * The route's circuit breaker as it is now. Null when the route has been deleted or disabled,
+   * its destination is disabled, or it no longer takes this event's source: the API reads it from
+   * the routes the source would deliver to now.
+   */
   routeCircuit: {
     state: CircuitStatus;
     openedAt: string | null;

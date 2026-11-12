@@ -128,7 +128,8 @@ const endpoint = await hookbase.endpoints.create('app_123', {
   circuitFailureThreshold: 5,
   circuitCooldownSeconds: 120,
 });
-console.log('Secret:', endpoint.secret); // Save this!
+// whsec_..., shown once. Store it (secretStore stands for your secret manager); don't log it.
+await secretStore.set('ep_prod', endpoint.secret!);
 
 // Ed25519 (Standard Webhooks v1a): Hookbase keeps the private key; you get the public key
 const ed = await hookbase.endpoints.create('app_123', {
@@ -150,9 +151,9 @@ await hookbase.endpoints.enable('app_123', 'ep_456');
 // (gracePeriodSeconds, 0-86400, default 3600).
 const rotated = await hookbase.endpoints.rotateSecret('app_123', 'ep_456', { gracePeriodSeconds: 600 });
 if (rotated.signatureScheme === 'ed25519') {
-  console.log(rotated.publicKey, rotated.previousPublicKey); // whpk_... new and outgoing
+  console.log(rotated.publicKey, rotated.previousPublicKey); // whpk_... new and outgoing (public)
 } else {
-  console.log(rotated.secret); // whsec_..., shown once
+  await secretStore.set('ep_456', rotated.secret); // whsec_..., shown once: store it, don't log it
 }
 
 // Get statistics
@@ -359,13 +360,16 @@ const destination = await hookbase.destinations.create({
   name: 'Orders service',
   url: 'https://orders.example.com/hookbase',
 });
-console.log(destination.signingSecret); // whsec_..., shown once
+// whsec_..., in this response only: store it where the receiver reads it, don't log it
+await secretStore.set('orders-service', destination.signingSecret!);
 
 // Show it again, or rotate it (both need a key with write scope)
 const { signingSecret } = await hookbase.destinations.revealSecret(destination.id);
-// For gracePeriodSeconds (default 3600) deliveries carry signatures from both secrets
+// For gracePeriodSeconds (default 3600) deliveries carry signatures from both secrets.
+// Never retried after a timeout or 5xx: check revealSecret() before rotating again.
 const rotated = await hookbase.destinations.rotateSecret(destination.id, { gracePeriodSeconds: 600 });
-console.log(rotated.signingSecret, rotated.previousSecretExpiresAt);
+await secretStore.set('orders-service', rotated.signingSecret);
+console.log(`The old secret verifies until ${rotated.previousSecretExpiresAt}`);
 ```
 
 A **bridge** destination publishes each delivery as an outbound event, to the endpoints subscribed to
@@ -416,10 +420,13 @@ console.log(replay.deliveryId, replay.modified, replay.targetDestinationId);
 When a route's or an endpoint's circuit breaker opens, its deliveries and messages wait as `held`
 instead of spending attempts against a target that is down. They go out once it recovers; one still
 held when its retry window ends (`holdExpiresAt`) is dead-lettered. Holding is on by default (for
-routes, on plans with the circuit breaker).
+routes, on plans with the circuit breaker; a route with failover destinations doesn't hold).
+
+Opting out does not bring retries back. With `holdOnCircuitOpen: false`, a delivery or message that
+meets an open circuit is dead-lettered at once, with the reason `circuit_breaker_open`.
 
 ```typescript
-// Opt a route (or an endpoint) out
+// Opt a route (or an endpoint) out: deliveries that meet its open circuit go straight to the DLQ
 await hookbase.routes.update('route_123', { holdOnCircuitOpen: false });
 
 // How many are waiting (counted up to 10,000)
@@ -562,6 +569,8 @@ try {
 - **5xx, timeouts and network errors** are retried with exponential backoff for GET, PUT, PATCH
   and DELETE. A POST is retried on these only with an idempotency key (passing `retries` alone is
   not enough), since the first attempt may have run. A POST whose connection was refused is retried.
+  `destinations.rotateSecret()` and `deliveries.replayWithEdit()` are never retried on these: the
+  API doesn't deduplicate them, so they don't send an idempotency key even when you pass one.
 - **Other 4xx** are never retried. A request cancelled with `signal` is not retried.
 
 ## API keys

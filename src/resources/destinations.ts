@@ -1,4 +1,4 @@
-import { BaseResource, splitParams, type ApiClient } from './base';
+import { BaseResource, splitParams, withoutIdempotencyKey, type ApiClient } from './base';
 import {
   createDestinationBody,
   importBody,
@@ -178,7 +178,7 @@ export class DestinationsResource extends BaseResource {
   async test(id: string, options?: RequestOptions): Promise<DestinationTestResult>;
   async test(
     id: string,
-    input: TestDestinationInput,
+    input: TestDestinationInput | undefined,
     options?: RequestOptions
   ): Promise<DestinationTestResult>;
   async test(
@@ -201,8 +201,11 @@ export class DestinationsResource extends BaseResource {
   }
 
   /**
-   * Show an `http` destination's signing secret. Needs a key with write scope. Any other type has
-   * no secret, and the API answers 400.
+   * Show an `http` destination's signing secret. Needs a key with write scope.
+   *
+   * The API answers 400 for any other type (they have no secret), 404 when the destination has no
+   * secret yet (rotate to issue one), and 500 when the stored secret can't be decrypted (rotating
+   * replaces it).
    */
   async revealSecret(id: string, options?: RequestOptions): Promise<DestinationSigningSecret> {
     const result = await this.client.request<DestinationSigningSecret>(
@@ -221,13 +224,15 @@ export class DestinationsResource extends BaseResource {
    * the receiver can switch over without rejecting any. Pass `{ gracePeriodSeconds }` (0-86400;
    * the API defaults to 3600) to choose how long; 0 retires the old secret at once.
    *
-   * Not retried on a timeout or 5xx: a rotation that did go through and is then repeated
-   * replaces the secret you were just handed.
+   * Never retried after a timeout, 5xx or dropped connection, even with an `idempotencyKey`: the
+   * API does not deduplicate rotations, so the key is not sent. A rotation that went through and
+   * was repeated would replace the secret you were just handed, and the one your receivers hold
+   * would drop out of the grace period. A 429 is still retried.
    */
   async rotateSecret(id: string, options?: RequestOptions): Promise<DestinationSigningSecret>;
   async rotateSecret(
     id: string,
-    params: RotateDestinationSecretParams,
+    params: RotateDestinationSecretParams | undefined,
     options?: RequestOptions
   ): Promise<DestinationSigningSecret>;
   async rotateSecret(
@@ -243,7 +248,7 @@ export class DestinationsResource extends BaseResource {
     const result = await this.client.request<DestinationSigningSecret>(
       'POST',
       `/api/destinations/${encodeURIComponent(id)}/rotate-secret`,
-      { body: params, requestOptions: options }
+      { body: params, requestOptions: withoutIdempotencyKey(options) }
     );
     result.previousSecretExpiresAt ??= null;
     return result;

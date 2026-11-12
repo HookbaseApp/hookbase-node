@@ -17,6 +17,14 @@ function jsonResponse(data: unknown, status = 200) {
   };
 }
 
+/** A 429 the client may retry at once. */
+function rateLimited() {
+  return {
+    ...jsonResponse({ error: 'slow down' }, 429),
+    headers: new Headers({ 'content-type': 'application/json', 'retry-after': '0' }),
+  };
+}
+
 function call(mockFetch: ReturnType<typeof vi.fn>, i = 0) {
   const [url, init] = mockFetch.mock.calls[i];
   return {
@@ -120,14 +128,15 @@ describe('destinations: signing secrets', () => {
     expect(rotated.previousSecretExpiresAt).toBeNull();
   });
 
-  it('rotateSecret still takes RequestOptions as the second argument', async () => {
+  it('rotateSecret still takes RequestOptions as the second argument, and drops idempotencyKey', async () => {
     mockFetch.mockResolvedValueOnce(jsonResponse({ signingSecret: 'whsec_new', previousSecretExpiresAt: null }));
 
     await client.destinations.rotateSecret('dst_1', { idempotencyKey: 'rot_1' });
 
     const c = call(mockFetch);
     expect(c.body).toBeUndefined();
-    expect(c.headers['Idempotency-Key']).toBe('rot_1');
+    // The API doesn't deduplicate rotations, so the key isn't sent (and can't make it retryable).
+    expect(c.headers['Idempotency-Key']).toBeUndefined();
   });
 
   it('rotateSecret is not retried after a 5xx', async () => {
@@ -136,6 +145,35 @@ describe('destinations: signing secrets', () => {
 
     await expect(retrying.destinations.rotateSecret('dst_1')).rejects.toMatchObject({ status: 502 });
     expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  // A retried rotation that had gone through would replace the secret just handed out, and push the
+  // one receivers hold out of its grace period.
+  it('rotateSecret is not retried after a 502 even with an idempotencyKey', async () => {
+    const retrying = new Hookbase({ apiKey: 'k', fetch: mockFetch, retries: 3 });
+    mockFetch.mockResolvedValue(jsonResponse({ error: 'boom' }, 502));
+
+    await expect(
+      retrying.destinations.rotateSecret('dst_1', { gracePeriodSeconds: 600 }, { idempotencyKey: 'rot_1' })
+    ).rejects.toMatchObject({ status: 502 });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    await expect(
+      retrying.destinations.rotateSecret('dst_1', { idempotencyKey: 'rot_2', retries: 3 })
+    ).rejects.toMatchObject({ status: 502 });
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('rotateSecret still retries a 429, which ran nothing', async () => {
+    const retrying = new Hookbase({ apiKey: 'k', fetch: mockFetch, retries: 2 });
+    mockFetch
+      .mockResolvedValueOnce(rateLimited())
+      .mockResolvedValueOnce(jsonResponse({ signingSecret: 'whsec_new', previousSecretExpiresAt: null }));
+
+    const rotated = await retrying.destinations.rotateSecret('dst_1', { idempotencyKey: 'rot_1' });
+
+    expect(rotated.signingSecret).toBe('whsec_new');
+    expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 
   it('get and list pass hasSigningSecret through', async () => {
@@ -220,6 +258,16 @@ describe('destinations: bridge', () => {
     expect(c.method).toBe('POST');
     expect(c.url.pathname).toBe('/api/destinations/dst_1/test');
     expect(c.body).toBeUndefined();
+  });
+
+  it('test(id, undefined, options) sends no body', async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ success: true, status: 200, latencyMs: 12 }));
+
+    await client.destinations.test('dst_1', undefined, { idempotencyKey: 'test_1' });
+
+    const c = call(mockFetch);
+    expect(c.body).toBeUndefined();
+    expect(c.headers['Idempotency-Key']).toBe('test_1');
   });
 
   it('test(id, options) still treats the second argument as RequestOptions', async () => {

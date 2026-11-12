@@ -69,9 +69,10 @@ export class MessagesResource extends BaseResource {
     //
     // The deprecated per-endpoint status was always 'pending', which a held message isn't. The
     // response says only how many were held, not which, so 'held' and 'pending' are reported where
-    // the count settles it and 'unknown' where it doesn't.
+    // the count settles it and 'unknown' where it doesn't. A repeated idempotency key comes back
+    // without messagesHeld, so it reads as 'pending' there.
     const held = apiData.messagesHeld ?? 0;
-    const status: MessageStatus =
+    const status: MessageStatus | 'unknown' =
       held === 0 ? 'pending' : held >= endpoints.length ? 'held' : 'unknown';
     return {
       ...apiData,
