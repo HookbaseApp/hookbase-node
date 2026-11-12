@@ -4,6 +4,7 @@ import { withAttemptAliases, withOutboundMessageAliases } from './wire';
 import type {
   OutboundMessage,
   MessageAttempt,
+  MessageStatus,
   MessageReplayResult,
   SendMessageInput,
   SendMessageResponse,
@@ -51,11 +52,9 @@ export class MessagesResource extends BaseResource {
       if (targets.length === 1) body.endpointId = targets[0];
     }
 
-    const response = await this.client.request<ApiResponse<{
-      eventId: string;
-      messagesQueued: number;
-      endpoints: Array<{ id: string; url: string }>;
-    }>>(
+    const response = await this.client.request<ApiResponse<
+      Omit<SendMessageResponse, 'messageId' | 'outboundMessages'>
+    >>(
       'POST',
       '/api/send-event',
       {
@@ -65,15 +64,24 @@ export class MessagesResource extends BaseResource {
     );
     const apiData = response.data;
     const endpoints = apiData.endpoints ?? [];
+    // The response's fields are passed through as they came (`messagesHeld`, `eventVersion`, and
+    // any the API adds later); rebuilding the object field by field used to drop them.
+    //
+    // The deprecated per-endpoint status was always 'pending', which a held message isn't. The
+    // response says only how many were held, not which, so 'held' and 'pending' are reported where
+    // the count settles it and 'unknown' where it doesn't.
+    const held = apiData.messagesHeld ?? 0;
+    const status: MessageStatus =
+      held === 0 ? 'pending' : held >= endpoints.length ? 'held' : 'unknown';
     return {
-      eventId: apiData.eventId,
+      ...apiData,
       messagesQueued: apiData.messagesQueued ?? endpoints.length,
       endpoints,
       messageId: apiData.eventId,
       outboundMessages: endpoints.map((ep) => ({
         id: ep.id,
         endpointId: ep.id,
-        status: 'pending' as const,
+        status,
       })),
     };
   }

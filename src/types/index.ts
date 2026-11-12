@@ -795,6 +795,14 @@ export interface SendMessageResponse {
   messagesQueued: number;
   /** The endpoints the event was queued for. */
   endpoints: Array<{ id: string; url: string }>;
+  /**
+   * How many of the queued messages were created `held`, because their endpoint's circuit is open
+   * and it holds messages (`holdOnCircuitOpen`). Absent when none were, and on a repeated
+   * idempotency key. The response does not say which endpoints' messages are held.
+   */
+  messagesHeld?: number;
+  /** The version label the payload was published in. Absent for an unversioned event type. */
+  eventVersion?: string;
 
   /** @deprecated The API calls this `eventId`; the SDK mirrors it here. Read `eventId`. */
   messageId: string;
@@ -802,6 +810,11 @@ export interface SendMessageResponse {
    * @deprecated The send response carries endpoints, not outbound messages: each entry's `id`
    * is the ENDPOINT id, not a message id. Read `endpoints`, and list messages by `eventId`'s
    * endpoints for message ids.
+   *
+   * `status` is derived from `messagesHeld`, the only status the response carries: `held` when
+   * every message was held, `pending` when none was, and `unknown` when only some were (the
+   * response does not say which). `pending` also covers messages that started as `awaiting_pull`
+   * (polling endpoints) or `fifo_waiting` (FIFO endpoints); list the messages for their status.
    */
   outboundMessages: Array<{
     id: string;

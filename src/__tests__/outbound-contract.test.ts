@@ -166,6 +166,41 @@ describe('outbound contract', () => {
       expect(result.endpoints).toEqual(sendResult.data.endpoints);
       expect(result.messageId).toBe('evt_1');
       expect(result.outboundMessages.map((m) => m.endpointId)).toEqual(['ep_1', 'ep_2']);
+      expect(result.outboundMessages.map((m) => m.status)).toEqual(['pending', 'pending']);
+      expect(result.messagesHeld).toBeUndefined();
+    });
+
+    // send-event.ts adds `messagesHeld` (only when > 0) and `eventVersion` (only for a versioned
+    // event type). send() used to rebuild the response from three named fields, dropping both, and
+    // reported every message as 'pending' even when the API had created it held.
+    it('passes messagesHeld and eventVersion through, and reports all-held messages as held', async () => {
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ data: { ...sendResult.data, messagesHeld: 2, eventVersion: 'v2' } }, 201)
+      );
+
+      const result = await client.messages.send('app_1', { eventType: 'x', payload: {} });
+
+      expect(result.messagesHeld).toBe(2);
+      expect(result.eventVersion).toBe('v2');
+      expect(result.messagesQueued).toBe(2);
+      expect(result.outboundMessages.map((m) => m.status)).toEqual(['held', 'held']);
+    });
+
+    it("reports 'unknown' when only some messages were held, since the response doesn't say which", async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({ data: { ...sendResult.data, messagesHeld: 1 } }, 201));
+
+      const result = await client.messages.send('app_1', { eventType: 'x', payload: {} });
+
+      expect(result.messagesHeld).toBe(1);
+      expect(result.outboundMessages.map((m) => m.status)).toEqual(['unknown', 'unknown']);
+    });
+
+    it('keeps response fields it does not know about', async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({ data: { ...sendResult.data, addedLater: true } }, 201));
+
+      const result = await client.messages.send('app_1', { eventType: 'x', payload: {} });
+
+      expect((result as unknown as Record<string, unknown>).addedLater).toBe(true);
     });
   });
 
