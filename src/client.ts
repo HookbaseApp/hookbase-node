@@ -43,7 +43,7 @@ const DEFAULT_RETRIES = 3;
 // Must match the version in package.json; version-sync.test.ts fails if it drifts. It rode at
 // 2.1.0 through the 2.x and 3.0 releases, so every User-Agent those published reported the
 // wrong SDK version to the API.
-const SDK_VERSION = '4.2.0';
+const SDK_VERSION = '4.2.1';
 
 /**
  * Hookbase API client
